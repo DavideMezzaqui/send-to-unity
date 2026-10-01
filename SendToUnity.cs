@@ -578,7 +578,13 @@ namespace SendToUnity
             try
             {
                 foreach (string sub in Directory.GetDirectories(folder)) RemoveEmptyFolders(sub);
-                if (!Directory.EnumerateFileSystemEntries(folder).Any()) Directory.Delete(folder);
+                // se restano solo file di sistema come Thumbs.db la cartella si può togliere
+                var left = Directory.GetFileSystemEntries(folder);
+                if (left.All(f => File.Exists(f) && Junk.Contains(Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)))
+                {
+                    foreach (string f in left) File.Delete(f);
+                    Directory.Delete(folder);
+                }
             }
             catch (Exception) { }
         }
@@ -1247,6 +1253,7 @@ namespace SendToUnity
 
             filesLabel.Name = "filesLabel";
             filesLabel.AutoSize = true;
+            filesLabel.UseMnemonic = false;   // altrimenti la & nei nomi sparisce
             filesLabel.MaximumSize = new Size(width + Ui.S(110), 0);
             filesLabel.Margin = new Padding(0, 0, 0, Ui.S(14));
             AddRow(grid, filesLabel, null);
@@ -1262,6 +1269,7 @@ namespace SendToUnity
 
             pathLabel.Name = "pathLabel";
             pathLabel.AutoSize = true;
+            pathLabel.UseMnemonic = false;
             pathLabel.ForeColor = SystemColors.GrayText;
             pathLabel.MaximumSize = new Size(width + Ui.S(110), 0);
             pathLabel.Margin = new Padding(0, Ui.S(3), 0, 0);
@@ -1508,6 +1516,7 @@ namespace SendToUnity
                 ForeColor = color,
                 Font = font,
                 AutoSize = true,
+                UseMnemonic = false,
                 MaximumSize = new Size(Ui.S(460), 0),
                 Margin = new Padding(0, top, 0, 0)
             };

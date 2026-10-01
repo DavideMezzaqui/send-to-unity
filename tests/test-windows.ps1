@@ -82,6 +82,8 @@ using System.Runtime.InteropServices;
 public static class Win {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr w, string l);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
 }
 '@
 $AE    = [System.Windows.Automation.AutomationElement]
@@ -109,19 +111,26 @@ function Find-Type($parent, $type) {
 }
 function Press($element) {
     if (-not $element) { Note 'pulsante non trovato'; return }
-    # Invoke puo' restare bloccato se il clic apre una finestra modale: lo eseguo in un thread a parte
-    $ps = [PowerShell]::Create()
-    [void]$ps.AddScript({ param($e) $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }).AddArgument($element)
-    [void]$ps.BeginInvoke()
+    $pattern = $null
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+        # Invoke puo' restare bloccato se il clic apre una finestra modale: lo eseguo in un thread a parte
+        $ps = [PowerShell]::Create()
+        [void]$ps.AddScript({ param($p) $p.Invoke() }).AddArgument($pattern)
+        [void]$ps.BeginInvoke()
+    } else {
+        [void][Win]::PostMessage([IntPtr]$element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    }
     Start-Sleep -Milliseconds 300
 }
-function Set-Text($combo, [string]$text) {
+function Toggle($element) {
     $pattern = $null
-    if ($combo.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
-        $pattern.SetValue($text)
-        return
-    }
-    (Find-Type $combo $Types::Edit).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($text)
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) { $pattern.Toggle() }
+    else { [void][Win]::PostMessage([IntPtr]$element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }
+    Start-Sleep -Milliseconds 200
+}
+function Set-Text($combo, [string]$text) {
+    # WM_SETTEXT su una casella combinata modificabile scrive nel suo campo di testo
+    [void][Win]::SendMessage([IntPtr]$combo.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, $text)
 }
 function Save-Shot($element, [string]$name) {
     try {
@@ -201,6 +210,8 @@ try {
     Check ($null -ne $dialog) 'si apre la finestra'
     if ($dialog) {
         Save-Shot $dialog '1-finestra'
+        $pathText = (Find-Id $dialog 'pathLabel').Current.Name
+        Check ($pathText -eq $p1) "il percorso del progetto si legge intero ($pathText)"
         $folder = Find-Id $dialog 'folderCombo'
         Set-Text $folder 'Packages/sbagliata'
         Press (Find-Id $dialog 'sendButton')
@@ -328,7 +339,7 @@ try {
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '6-finestra-scegli'
-        (Find-Id $dialog 'moveCheck').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+        Toggle (Find-Id $dialog 'moveCheck')
         Set-Text (Find-Id $dialog 'folderCombo') 'Assets/Spostati'
         Press (Find-Id $dialog 'sendButton')
     }
