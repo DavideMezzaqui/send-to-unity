@@ -78,18 +78,53 @@ function Wait-Exit($processes, [int]$seconds = 30) {
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 Add-Type @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
+
+public class Child {
+    public IntPtr Handle;
+    public string Class;
+    public string Text;
+    public int Id;
+    public int Top;
+}
+
 public static class Win {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    delegate bool EnumProc(IntPtr window, IntPtr data);
+    [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc proc, IntPtr data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int max);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr w, StringBuilder l);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr w, string l);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+
+    // Controlli dentro una finestra (anche di un altro processo): classe, testo, id e posizione
+    public static List<Child> Children(IntPtr parent) {
+        var list = new List<Child>();
+        EnumChildWindows(parent, delegate(IntPtr h, IntPtr data) {
+            var name = new StringBuilder(256);
+            GetClassName(h, name, 256);
+            var text = new StringBuilder(2048);
+            SendMessage(h, 0x000D, (IntPtr)2048, text);   // WM_GETTEXT funziona anche tra processi
+            Rect r;
+            GetWindowRect(h, out r);
+            list.Add(new Child { Handle = h, Class = name.ToString(), Text = text.ToString(), Id = GetDlgCtrlID(h), Top = r.Top });
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
 }
 '@
 $AE    = [System.Windows.Automation.AutomationElement]
 $Scope = [System.Windows.Automation.TreeScope]
-$Types = [System.Windows.Automation.ControlType]
 
+# Finestre principali: le trovo con UI Automation (nome e classe)
 function Find-Window([int]$procId, [string]$name, [string]$class = '*', [int]$timeoutMs = 15000) {
     $condition = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $procId)
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -103,46 +138,33 @@ function Find-Window([int]$procId, [string]$name, [string]$class = '*', [int]$ti
     }
     $null
 }
-function Find-Id($parent, [string]$id) {
-    $parent.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $id)))
+
+# Controlli interni: li trovo con le API Win32, piu' affidabili tra processi diversi
+function Get-Controls($window) { @([Win]::Children([IntPtr]$window.Current.NativeWindowHandle)) }
+function Find-Control($window, [string]$class, [string]$text) {
+    Get-Controls $window | Where-Object { $_.Class -like $class -and $_.Text -eq $text } | Select-Object -First 1
 }
-function Find-Named($parent, [string]$name, $type) {
-    $condition = New-Object System.Windows.Automation.AndCondition(
-        (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $name)),
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $type)))
-    $parent.FindFirst($Scope::Descendants, $condition)
+function Find-FolderBox($window) {
+    # la seconda casella combinata dall'alto e' quella della cartella
+    Get-Controls $window | Where-Object { $_.Class -like '*COMBOBOX*' } | Sort-Object Top | Select-Object -Last 1
 }
-# Pulsante di una finestra di messaggio di Windows: per numero (6 = Si', 7 = No) o per testo
-function Find-Button($window, [string]$id, [string]$name) {
-    $button = Find-Id $window $id
-    if (-not $button) { $button = Find-Named $window $name $Types::Button }
-    $button
+function Find-MessageButton($window, [int]$id) {
+    $buttons = @(Get-Controls $window | Where-Object { $_.Class -eq 'Button' })
+    $match = $buttons | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+    if ($match) { $match } else { $buttons | Select-Object -First 1 }
 }
-function Find-Type($parent, $type) {
-    $parent.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $type)))
+function Show-Controls($window) {
+    foreach ($c in Get-Controls $window) { Note ("  controllo: {0} | {1} | id {2}" -f $c.Class, $c.Text, $c.Id) }
 }
-function Press($element) {
-    if (-not $element) { Note 'pulsante non trovato'; return }
-    $pattern = $null
-    if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
-        # Invoke puo' restare bloccato se il clic apre una finestra modale: lo eseguo in un thread a parte
-        $ps = [PowerShell]::Create()
-        [void]$ps.AddScript({ param($p) $p.Invoke() }).AddArgument($pattern)
-        [void]$ps.BeginInvoke()
-    } else {
-        [void][Win]::PostMessage([IntPtr]$element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
-    }
-    Start-Sleep -Milliseconds 300
+function Press($control) {
+    if (-not $control) { Note 'pulsante non trovato'; return }
+    [void][Win]::PostMessage($control.Handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    Start-Sleep -Milliseconds 400
 }
-function Toggle($element) {
-    $pattern = $null
-    if ($element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) { $pattern.Toggle() }
-    else { [void][Win]::PostMessage([IntPtr]$element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }
-    Start-Sleep -Milliseconds 200
-}
-function Set-Text($combo, [string]$text) {
+function Set-Text($control, [string]$text) {
+    if (-not $control) { Note 'casella non trovata'; return }
     # WM_SETTEXT su una casella combinata modificabile scrive nel suo campo di testo
-    [void][Win]::SendMessage([IntPtr]$combo.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, $text)
+    [void][Win]::SendMessage($control.Handle, 0x000C, [IntPtr]::Zero, $text)
 }
 function Save-Shot($element, [string]$name) {
     try {
@@ -222,20 +244,20 @@ try {
     Check ($null -ne $dialog) 'si apre la finestra'
     if ($dialog) {
         Save-Shot $dialog '1-finestra'
-        Note ("percorso mostrato intero: " + ($null -ne (Find-Named $dialog $p1 $Types::Text)))
-        $folder = Find-Named $dialog 'Cartella' $Types::ComboBox
+        Show-Controls $dialog
+        $folder = Find-FolderBox $dialog
         Set-Text $folder 'Packages/sbagliata'
-        Press (Find-Named $dialog 'Invia' $Types::Button)
+        Press (Find-Control $dialog '*BUTTON*' 'Invia')
         $warning = Find-Window $proc.Id 'Invia a Unity' '#32770'
         Check ($null -ne $warning) 'cartella fuori da Assets: compare un avviso'
         if ($warning) {
             Save-Shot $warning '2-avviso'
-            Press (Find-Type $warning $Types::Button)
+            Press (Find-MessageButton $warning 2)
         }
         Start-Sleep -Milliseconds 700
         Check (-not $proc.HasExited) "dopo l'avviso la finestra resta aperta"
         Set-Text $folder 'Assets/Textures/Rocce'
-        Press (Find-Named $dialog 'Invia' $Types::Button)
+        Press (Find-Control $dialog '*BUTTON*' 'Invia')
         $toast = Find-Window $proc.Id 'Invia a Unity - notifica'
         Check ($null -ne $toast) 'compare la notifica'
         if ($toast) { Save-Shot $toast '3-notifica' }
@@ -267,7 +289,7 @@ try {
     Check ($null -ne $ask) 'chiede se sostituire un file gia presente'
     if ($ask) {
         Save-Shot $ask '4-sostituire'
-        Press (Find-Button $ask '6' 'Yes')   # 6 = Si'
+        Press (Find-MessageButton $ask 6)   # 6 = Si'
     }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') 'con Si il file viene sostituito'
@@ -275,7 +297,7 @@ try {
     [IO.File]::WriteAllText($albedo, 'A3')
     $proc = Start-Tool @('--to', (Q $p1), (Q $albedo))
     $ask = Find-Window $proc.Id 'Invia a Unity' '#32770'
-    if ($ask) { Press (Find-Button $ask '7' 'No') }   # 7 = No
+    if ($ask) { Press (Find-MessageButton $ask 7) }   # 7 = No
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') "con No il file resta com'era"
 
@@ -293,7 +315,7 @@ try {
     New-File (Join-Path $flip 'frame_03.png') 'F3' | Out-Null
     $proc = Start-Tool @('--to', (Q $p1), (Q $flip))
     $ask = Find-Window $proc.Id 'Invia a Unity' '#32770'
-    if ($ask) { Press (Find-Button $ask '7' 'No') }
+    if ($ask) { Press (Find-MessageButton $ask 7) }
     [void](Wait-Exit $proc)
     Check (Exists (Join-Path $flipDest 'frame_03.png')) 'al secondo invio il file nuovo si aggiunge'
     Check (-not (Exists (Join-Path $flipDest 'Flipbook'))) 'nessuna cartella annidata (Flipbook dentro Flipbook)'
@@ -317,8 +339,8 @@ try {
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '5-finestra-unity-aperto'
-        Set-Text (Find-Named $dialog 'Cartella' $Types::ComboBox) 'Assets/VFX'
-        Press (Find-Named $dialog 'Invia' $Types::Button)
+        Set-Text (Find-FolderBox $dialog) 'Assets/VFX'
+        Press (Find-Control $dialog '*BUTTON*' 'Invia')
     }
     [void](Wait-Exit $proc)
     $text = Log-Since $mark
@@ -337,7 +359,7 @@ try {
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p2), (Q $smoke))
     $ask = Find-Window $proc.Id 'Invia a Unity' '#32770'
-    if ($ask) { Press (Find-Button $ask '6' 'Yes') }
+    if ($ask) { Press (Find-MessageButton $ask 6) }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $p2 'Assets\VFX\fumo.png')) -eq 'S2') 'invio rapido verso il progetto aperto'
     Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'primo piano|finestra di Unity' }) -join ' | '))
@@ -350,9 +372,9 @@ try {
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '6-finestra-scegli'
-        Toggle (Find-Type $dialog $Types::CheckBox)
-        Set-Text (Find-Named $dialog 'Cartella' $Types::ComboBox) 'Assets/Spostati'
-        Press (Find-Named $dialog 'Invia' $Types::Button)
+        Press (Find-Control $dialog '*BUTTON*' 'Sposta invece di copiare (gli originali vengono tolti)')
+        Set-Text (Find-FolderBox $dialog) 'Assets/Spostati'
+        Press (Find-Control $dialog '*BUTTON*' 'Invia')
     }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $p2 'Assets\Spostati\da_spostare.png')) -eq 'M') 'file spostato nel progetto aperto (proposto per primo)'
