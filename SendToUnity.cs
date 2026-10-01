@@ -1035,6 +1035,7 @@ namespace SendToUnity
                 {
                     key.SetValue("MUIVerb", App.Name);
                     key.SetValue("SubCommands", "");
+                    key.SetValue("MultiSelectModel", "Player");
                     if (hub != null) key.SetValue("Icon", hub + ",0");
                     using (var shell = key.CreateSubKey("shell"))
                     {
@@ -1067,6 +1068,8 @@ namespace SendToUnity
             using (var item = shell.CreateSubKey(id))
             {
                 item.SetValue("MUIVerb", label);
+                // Player: la voce resta anche con più di 15 file (Explorer avvia un'istanza per file)
+                item.SetValue("MultiSelectModel", "Player");
                 if (separatorBefore) item.SetValue("CommandFlags", 0x20, RegistryValueKind.DWord);
                 using (var cmd = item.CreateSubKey("command")) cmd.SetValue("", command);
             }
