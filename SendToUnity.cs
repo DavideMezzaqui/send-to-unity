@@ -1260,6 +1260,7 @@ namespace SendToUnity
 
             AddRow(grid, Caption("Progetto", 0), null);
             projectCombo.Name = "projectCombo";
+            projectCombo.AccessibleName = "Progetto";   // nome letto da screen reader e UI Automation
             projectCombo.DropDownStyle = ComboBoxStyle.DropDownList;
             projectCombo.Width = width;
             projectCombo.Margin = new Padding(0, 0, Ui.S(6), 0);
@@ -1277,6 +1278,7 @@ namespace SendToUnity
 
             AddRow(grid, Caption("Cartella dentro il progetto (puoi anche scriverne una nuova)", Ui.S(14)), null);
             folderCombo.Name = "folderCombo";
+            folderCombo.AccessibleName = "Cartella";
             folderCombo.DropDownStyle = ComboBoxStyle.DropDown;
             folderCombo.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             folderCombo.Margin = Padding.Empty;

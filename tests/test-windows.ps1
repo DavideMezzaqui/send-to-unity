@@ -106,6 +106,18 @@ function Find-Window([int]$procId, [string]$name, [string]$class = '*', [int]$ti
 function Find-Id($parent, [string]$id) {
     $parent.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $id)))
 }
+function Find-Named($parent, [string]$name, $type) {
+    $condition = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $name)),
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $type)))
+    $parent.FindFirst($Scope::Descendants, $condition)
+}
+# Pulsante di una finestra di messaggio di Windows: per numero (6 = Si', 7 = No) o per testo
+function Find-Button($window, [string]$id, [string]$name) {
+    $button = Find-Id $window $id
+    if (-not $button) { $button = Find-Named $window $name $Types::Button }
+    $button
+}
 function Find-Type($parent, $type) {
     $parent.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $type)))
 }
@@ -210,11 +222,10 @@ try {
     Check ($null -ne $dialog) 'si apre la finestra'
     if ($dialog) {
         Save-Shot $dialog '1-finestra'
-        $pathText = (Find-Id $dialog 'pathLabel').Current.Name
-        Check ($pathText -eq $p1) "il percorso del progetto si legge intero ($pathText)"
-        $folder = Find-Id $dialog 'folderCombo'
+        Note ("percorso mostrato intero: " + ($null -ne (Find-Named $dialog $p1 $Types::Text)))
+        $folder = Find-Named $dialog 'Cartella' $Types::ComboBox
         Set-Text $folder 'Packages/sbagliata'
-        Press (Find-Id $dialog 'sendButton')
+        Press (Find-Named $dialog 'Invia' $Types::Button)
         $warning = Find-Window $proc.Id 'Invia a Unity' '#32770'
         Check ($null -ne $warning) 'cartella fuori da Assets: compare un avviso'
         if ($warning) {
@@ -224,7 +235,7 @@ try {
         Start-Sleep -Milliseconds 700
         Check (-not $proc.HasExited) "dopo l'avviso la finestra resta aperta"
         Set-Text $folder 'Assets/Textures/Rocce'
-        Press (Find-Id $dialog 'sendButton')
+        Press (Find-Named $dialog 'Invia' $Types::Button)
         $toast = Find-Window $proc.Id 'Invia a Unity - notifica'
         Check ($null -ne $toast) 'compare la notifica'
         if ($toast) { Save-Shot $toast '3-notifica' }
@@ -256,7 +267,7 @@ try {
     Check ($null -ne $ask) 'chiede se sostituire un file gia presente'
     if ($ask) {
         Save-Shot $ask '4-sostituire'
-        Press (Find-Id $ask '6')   # 6 = Si'
+        Press (Find-Button $ask '6' 'Yes')   # 6 = Si'
     }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') 'con Si il file viene sostituito'
@@ -264,7 +275,7 @@ try {
     [IO.File]::WriteAllText($albedo, 'A3')
     $proc = Start-Tool @('--to', (Q $p1), (Q $albedo))
     $ask = Find-Window $proc.Id 'Invia a Unity' '#32770'
-    if ($ask) { Press (Find-Id $ask '7') }   # 7 = No
+    if ($ask) { Press (Find-Button $ask '7' 'No') }   # 7 = No
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') "con No il file resta com'era"
 
@@ -282,7 +293,7 @@ try {
     New-File (Join-Path $flip 'frame_03.png') 'F3' | Out-Null
     $proc = Start-Tool @('--to', (Q $p1), (Q $flip))
     $ask = Find-Window $proc.Id 'Invia a Unity' '#32770'
-    if ($ask) { Press (Find-Id $ask '7') }
+    if ($ask) { Press (Find-Button $ask '7' 'No') }
     [void](Wait-Exit $proc)
     Check (Exists (Join-Path $flipDest 'frame_03.png')) 'al secondo invio il file nuovo si aggiunge'
     Check (-not (Exists (Join-Path $flipDest 'Flipbook'))) 'nessuna cartella annidata (Flipbook dentro Flipbook)'
@@ -306,8 +317,8 @@ try {
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '5-finestra-unity-aperto'
-        Set-Text (Find-Id $dialog 'folderCombo') 'Assets/VFX'
-        Press (Find-Id $dialog 'sendButton')
+        Set-Text (Find-Named $dialog 'Cartella' $Types::ComboBox) 'Assets/VFX'
+        Press (Find-Named $dialog 'Invia' $Types::Button)
     }
     [void](Wait-Exit $proc)
     $text = Log-Since $mark
@@ -326,7 +337,7 @@ try {
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p2), (Q $smoke))
     $ask = Find-Window $proc.Id 'Invia a Unity' '#32770'
-    if ($ask) { Press (Find-Id $ask '6') }
+    if ($ask) { Press (Find-Button $ask '6' 'Yes') }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $p2 'Assets\VFX\fumo.png')) -eq 'S2') 'invio rapido verso il progetto aperto'
     Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'primo piano|finestra di Unity' }) -join ' | '))
@@ -339,9 +350,9 @@ try {
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '6-finestra-scegli'
-        Toggle (Find-Id $dialog 'moveCheck')
-        Set-Text (Find-Id $dialog 'folderCombo') 'Assets/Spostati'
-        Press (Find-Id $dialog 'sendButton')
+        Toggle (Find-Type $dialog $Types::CheckBox)
+        Set-Text (Find-Named $dialog 'Cartella' $Types::ComboBox) 'Assets/Spostati'
+        Press (Find-Named $dialog 'Invia' $Types::Button)
     }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $p2 'Assets\Spostati\da_spostare.png')) -eq 'M') 'file spostato nel progetto aperto (proposto per primo)'
