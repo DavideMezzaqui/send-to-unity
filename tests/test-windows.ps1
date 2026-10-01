@@ -24,7 +24,7 @@ $sendToLink = Join-Path ([Environment]::GetFolderPath('SendTo')) 'Progetto Unity
 $script:failures = 0
 $fake = $null
 
-Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Drawing, System.Windows.Forms
 Add-Type -Path (Join-Path $PSScriptRoot 'WinTest.cs')
 
 # ------------------------------------------------------------------ utilita'
@@ -151,6 +151,50 @@ function Save-Shot($window, [string]$name) {
         Note "screenshot: $name"
     } catch { Note "screenshot $name non riuscito: $($_.Exception.Message)" }
 }
+function Shot-Screen([string]$name) {
+    try {
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+        $g = [System.Drawing.Graphics]::FromImage($bitmap)
+        $g.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
+        $g.Dispose()
+        [void][IO.Directory]::CreateDirectory($shots)
+        $bitmap.Save((Join-Path $shots "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+        $bitmap.Dispose()
+        Note "screenshot: $name"
+    } catch { Note "screenshot $name non riuscito: $($_.Exception.Message)" }
+}
+function Keys([string]$keys, [int]$pauseMs = 700) {
+    [System.Windows.Forms.SendKeys]::SendWait($keys)
+    Start-Sleep -Milliseconds $pauseMs
+}
+# Finestra vera di Esplora risorse sulla cartella, con il file selezionato e in primo piano
+function Open-Explorer([string]$folder, [string]$file) {
+    Start-Process explorer.exe -ArgumentList (Q $folder)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while ($watch.Elapsed.TotalSeconds -lt 15) {
+        $window = @((New-Object -ComObject Shell.Application).Windows()) |
+            Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $folder } | Select-Object -First 1
+        if ($window) {
+            Start-Sleep -Seconds 1
+            Select-InExplorer $window $file
+            return $window
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    $null
+}
+function Select-InExplorer($window, [string]$file) {
+    $window.Document.SelectItem($window.Document.Folder.ParseName($file), 1 + 4 + 8 + 16)   # seleziona, solo lui, visibile, focus
+    [void][Win]::SetForegroundWindow([IntPtr]$window.HWND)
+    Start-Sleep -Milliseconds 800
+}
+# Tasto menu sul file; su Windows 11 "Mostra altre opzioni" (ultima voce) apre il menu classico
+function Open-ClassicMenu {
+    Keys '+{F10}' 1500
+    if ([Environment]::OSVersion.Version.Build -ge 22000) { Keys '{UP}' 300; Keys '{ENTER}' 1500 }
+}
+
 # Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
 function Menu([string[]]$paths, $click = $null) {
     try {
@@ -180,7 +224,7 @@ try {
     $key = $registry.OpenSubKey($fileMenu)
     Check ($null -ne $key) 'voce "Invia a Unity" sui file'
     if ($key) {
-        Check ($key.GetValue('MUIVerb') -eq 'Invia a Unity') 'testo della voce'
+        Check ($key.GetValue('MUIVerb') -eq '&Invia a Unity') 'testo della voce, con la I come scorciatoia'
         Check ($null -eq $key.OpenSubKey('command')) 'vecchia voce sostituita'
     }
     Check ($null -ne $registry.OpenSubKey($dirMenu)) 'voce "Invia a Unity" sulle cartelle'
@@ -374,7 +418,33 @@ try {
     Check (-not (Exists $moving)) "spostando, l'originale sparisce"
     try { $fake.Kill() } catch { }
 
-    Write-Host '--- 9. disinstallazione'
+    Write-Host '--- 9. il vero Esplora risorse, da tastiera'
+    $realDir = Join-Path $work 'esplora'
+    $realFile = New-File (Join-Path $realDir 'texture_vera.png') 'R'
+    $mark = Log-Mark
+    $explorer = Open-Explorer $realDir 'texture_vera.png'
+    Check ($null -ne $explorer) 'finestra di Esplora risorse aperta sul file'
+    if ($explorer) {
+        Open-ClassicMenu
+        Shot-Screen '7-menu-classico'
+        Keys 'i' 1200
+        Shot-Screen '8-sottomenu'
+        Keys '{ESC}' 300; Keys '{ESC}' 300; Keys '{ESC}' 300
+        Start-Sleep -Seconds 4
+        Check (-not (Log-Since $mark).Contains('leader')) 'aprire e chiudere il menu senza scegliere non avvia il programma'
+
+        # adesso la scelta vera: tasto menu, I, primo progetto (il piu' recente: Altro progetto)
+        Select-InExplorer $explorer 'texture_vera.png'
+        Open-ClassicMenu
+        Keys 'i' 1000
+        Keys '{RIGHT}' 500
+        Keys '{ENTER}' 500
+        [void](Wait-Idle)
+        Check ((Read-File (Join-Path $p2 'Assets\Spostati\texture_vera.png')) -eq 'R') 'dal vero menu di Esplora risorse il file arriva nel progetto'
+        try { $explorer.Quit() } catch { }
+    }
+
+    Write-Host '--- 10. disinstallazione'
     Copy-Item -LiteralPath $log -Destination $savedLog -ErrorAction SilentlyContinue
     Run-Native { & (Join-Path $src 'uninstall.cmd') /quiet }
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'

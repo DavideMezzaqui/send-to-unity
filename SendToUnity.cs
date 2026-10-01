@@ -1033,7 +1033,7 @@ namespace SendToUnity
                 Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
                 using (var key = Registry.CurrentUser.CreateSubKey(keyPath))
                 {
-                    key.SetValue("MUIVerb", App.Name);
+                    key.SetValue("MUIVerb", "&" + App.Name);   // tasto destro, poi I
                     key.SetValue("SubCommands", "");
                     key.SetValue("MultiSelectModel", "Player");
                     if (hub != null) key.SetValue("Icon", hub + ",0");
@@ -1313,9 +1313,11 @@ namespace SendToUnity
 
             projectCombo.SelectedIndexChanged += delegate { ProjectChanged(); };
             browse.Click += delegate { Browse(); };
+            ActiveControl = folderCombo;   // il progetto e' gia' scelto: si scrive subito la cartella
             Shown += delegate
             {
                 Activate();
+                folderCombo.SelectAll();
                 PullFiles();
             };
             collector.Arrived += OnArrived;
@@ -1545,6 +1547,7 @@ namespace SendToUnity
             Controls.Add(grid);
             AcceptButton = replace;   // il caso tipico: texture aggiornate da rimandare
             CancelButton = cancel;
+            ActiveControl = replace;  // altrimenti il focus finisce su Annulla e Invio annulla
             Shown += delegate { Activate(); };
         }
     }
