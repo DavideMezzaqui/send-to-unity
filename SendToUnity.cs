@@ -1171,17 +1171,11 @@ namespace SendToUnity
             Box(text, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
+        // Yes = sostituisci, No = salta, Cancel = non inviare niente
         public static DialogResult AskOverwrite(List<string> targets, Result result)
         {
-            var names = targets.Take(8).Select(t => "      " + Path.GetFileName(t)).ToList();
-            if (targets.Count > 8) names.Add("      ... e altri " + (targets.Count - 8));
-            string text =
-                (targets.Count == 1 ? "Questo file esiste già" : targets.Count + " file esistono già") +
-                " in " + Path.GetFileName(result.Project) + " / " + result.Folder + ":\n\n" +
-                string.Join("\n", names) +
-                "\n\nVuoi sostituirli? Le impostazioni di import di Unity (file .meta) restano invariate.\n\n" +
-                "Sì = sostituisci      No = salta questi file      Annulla = non inviare niente";
-            return Box(text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            Init();
+            using (var dialog = new ConflictDialog(targets, result)) return dialog.ShowDialog();
         }
 
         public static void ShowResult(Result result)
@@ -1467,6 +1461,91 @@ namespace SendToUnity
         {
             collector.Arrived -= OnArrived;
             base.OnFormClosed(e);
+        }
+    }
+
+    // Domanda sui file già presenti, con pulsanti che dicono cosa fanno
+    class ConflictDialog : Form
+    {
+        public ConflictDialog(List<string> targets, Result result)
+        {
+            Name = "ConflictDialog";
+            Text = "File già presenti";
+            Font = SystemFonts.MessageBoxFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowIcon = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            TopMost = true;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+            int width = Ui.S(440);
+            var grid = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                Padding = new Padding(Ui.S(16)),
+                Margin = Padding.Empty
+            };
+
+            string where = Path.GetFileName(result.Project) + "  \u203A  " + result.Folder;
+            grid.Controls.Add(new Label
+            {
+                AutoSize = true,
+                UseMnemonic = false,
+                MaximumSize = new Size(width, 0),
+                Font = new Font(Font, FontStyle.Bold),
+                Text = (targets.Count == 1 ? "1 file esiste già" : targets.Count + " file esistono già") + " in " + where
+            });
+
+            var names = targets.Take(8).Select(t => Path.GetFileName(t)).ToList();
+            if (targets.Count > 8) names.Add("... e altri " + (targets.Count - 8));
+            grid.Controls.Add(new Label
+            {
+                AutoSize = true,
+                UseMnemonic = false,
+                MaximumSize = new Size(width, 0),
+                Margin = new Padding(Ui.S(12), Ui.S(8), 0, 0),
+                Text = string.Join("\n", names)
+            });
+
+            grid.Controls.Add(new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(width, 0),
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, Ui.S(12), 0, 0),
+                Text = "Sostituendoli, le impostazioni di import di Unity (file .meta) restano invariate."
+            });
+
+            var replace = new Button { Text = "Sostituisci", DialogResult = DialogResult.Yes, AutoSize = true };
+            var skip = new Button { Text = "Salta questi", DialogResult = DialogResult.No, AutoSize = true };
+            var cancel = new Button { Text = "Annulla", DialogResult = DialogResult.Cancel, AutoSize = true };
+            foreach (var b in new[] { replace, skip, cancel })
+            {
+                b.MinimumSize = new Size(Ui.S(92), 0);
+                b.Margin = new Padding(Ui.S(8), 0, 0, 0);
+            }
+            var buttons = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.RightToLeft,
+                AutoSize = true,
+                WrapContents = false,
+                Anchor = AnchorStyles.Right,
+                Margin = new Padding(0, Ui.S(18), 0, 0)
+            };
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(skip);
+            buttons.Controls.Add(replace);
+            grid.Controls.Add(buttons);
+
+            Controls.Add(grid);
+            AcceptButton = replace;   // il caso tipico: texture aggiornate da rimandare
+            CancelButton = cancel;
+            Shown += delegate { Activate(); };
         }
     }
 
