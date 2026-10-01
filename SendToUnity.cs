@@ -42,6 +42,9 @@ namespace SendToUnity
         [STAThread]
         static int Main(string[] args)
         {
+            // Explorer avvia l'istanza per il file successivo solo quando questa risulta
+            // "pronta all'input": lo segnalo subito, così con tanti file non ci sono pause
+            Native.SignalIdle();
             try
             {
                 return Run(args);
@@ -293,6 +296,7 @@ namespace SendToUnity
                 lock (sync) last = lastArrival;
                 DateTime now = DateTime.UtcNow;
                 if ((now - last).TotalMilliseconds >= quietMs || (now - started).TotalMilliseconds >= maxMs) return;
+                Native.SignalIdle();   // vedi Program.Main
                 Thread.Sleep(20);
             }
         }
@@ -1736,6 +1740,27 @@ namespace SendToUnity
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
         [DllImport("user32.dll")] static extern bool AttachThreadInput(uint thread, uint otherThread, bool attach);
         [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct NativeMessage
+        {
+            public IntPtr Window;
+            public uint Message;
+            public IntPtr WParam;
+            public IntPtr LParam;
+            public uint Time;
+            public int X;
+            public int Y;
+        }
+
+        [DllImport("user32.dll")] static extern bool PeekMessage(out NativeMessage message, IntPtr window, uint min, uint max, uint remove);
+
+        // Guardare la coda dei messaggi (senza toglierli) fa risultare il processo "pronto all'input"
+        public static void SignalIdle()
+        {
+            NativeMessage message;
+            PeekMessage(out message, IntPtr.Zero, 0, 0, 0);
+        }
 
         public static bool BringToFront(IntPtr window)
         {
