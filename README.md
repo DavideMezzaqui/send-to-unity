@@ -24,3 +24,5 @@ Per disinstallare: doppio clic su `uninstall.cmd`.
 - Oltre 15 file Windows nasconde la voce del tasto destro: usa **Invia a > Progetto Unity**.
 - Unity importa da solo solo se "Auto Refresh" e' attivo (Preferences > Asset Pipeline) e non sei in Play mode.
   Altrimenti premi Ctrl+R in Unity.
+- Usa VBScript per avviarsi senza finestre nere. Oggi e' attivo su Windows 10 e 11; Microsoft ha annunciato
+  che in futuro sara' disattivato di default. Se succede, la voce smette di funzionare: dimmelo e lo sostituiamo.
