@@ -65,39 +65,48 @@ foreach ($file in @($txt, $png)) {
     }
 }
 
-# Vera finestra di Esplora risorse: Maiusc+F10 apre il menu classico, Esc lo chiude senza scegliere
-foreach ($file in @($png, $txt)) {
-    Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
-    try {
-        Start-Process explorer.exe -ArgumentList ('/select,' + (Q $file))
-        Start-Sleep -Seconds 4
-        $shell = New-Object -ComObject Shell.Application
-        $window = @($shell.Windows()) | Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $work } | Select-Object -First 1
-        if ($window) {
-            [void][Win]::SetForegroundWindow([IntPtr]$window.HWND)
-            Start-Sleep -Milliseconds 800
-            [System.Windows.Forms.SendKeys]::SendWait('+{F10}')
-            Start-Sleep -Seconds 2
-            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-            $g = [System.Drawing.Graphics]::FromImage($bitmap)
-            $g.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
-            $g.Dispose()
-            [void][IO.Directory]::CreateDirectory($shots)
-            $bitmap.Save((Join-Path $shots ('0-menu-explorer' + [IO.Path]::GetExtension($file).Replace('.', '-') + '.png')), [System.Drawing.Imaging.ImageFormat]::Png)
-            $bitmap.Dispose()
-            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
-            Start-Sleep -Milliseconds 500
-            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
-            $calls = Calls 5
-            Write-Host ("DIAG Esplora risorse {0}: menu aperto e chiuso con Esc | in primo piano {1} | partenze: {2} {3}" -f [IO.Path]::GetExtension($file), [Win]::GetForegroundWindow(), $calls.Count, ($calls -join '; '))
-            $window.Quit()
-        } else {
-            Write-Host 'DIAG Esplora risorse: finestra non trovata'
-        }
-    } catch {
-        Write-Host "DIAG Esplora risorse: errore $($_.Exception.Message)"
+# Vera finestra di Esplora risorse: file selezionato, tasto menu (Maiusc+F10), poi
+# "Mostra altre opzioni" per il menu classico; infine Esc senza scegliere niente.
+function Shot([string]$name) {
+    $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+    $g = [System.Drawing.Graphics]::FromImage($bitmap)
+    $g.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
+    $g.Dispose()
+    [void][IO.Directory]::CreateDirectory($shots)
+    $bitmap.Save((Join-Path $shots "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+    $bitmap.Dispose()
+}
+Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+try {
+    Start-Process explorer.exe -ArgumentList (Q $work)
+    Start-Sleep -Seconds 4
+    $shellApp = New-Object -ComObject Shell.Application
+    $window = @($shellApp.Windows()) | Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $work } | Select-Object -First 1
+    if ($window) {
+        $item = $window.Document.Folder.ParseName('prova.png')
+        $window.Document.SelectItem($item, 1 + 4 + 8 + 16)   # seleziona, deseleziona gli altri, mostra, focus
+        [void][Win]::SetForegroundWindow([IntPtr]$window.HWND)
+        Start-Sleep -Milliseconds 800
+        [System.Windows.Forms.SendKeys]::SendWait('+{F10}')
+        Start-Sleep -Seconds 2
+        Shot '0-menu-moderno'
+        [System.Windows.Forms.SendKeys]::SendWait('{UP}')      # ultima voce: Mostra altre opzioni
+        Start-Sleep -Milliseconds 300
+        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        Start-Sleep -Seconds 2
+        Shot '0-menu-classico'
+        [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+        Start-Sleep -Milliseconds 400
+        [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+        $calls = Calls 5
+        Write-Host ("DIAG Esplora risorse .png selezionato: menu aperto e chiuso con Esc | partenze: {0} {1}" -f $calls.Count, ($calls -join '; '))
+        $window.Quit()
+    } else {
+        Write-Host 'DIAG Esplora risorse: finestra non trovata'
     }
+} catch {
+    Write-Host "DIAG Esplora risorse: errore $($_.Exception.Message)"
 }
 
 foreach ($keyPath in $keys) { $registry.DeleteSubKeyTree($keyPath, $false) }

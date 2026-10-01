@@ -34,7 +34,7 @@ echo.
 echo Installato.
 echo Tasto destro su file o cartelle ^> Invia a Unity.
 echo Su Windows 11 la voce e' in "Mostra altre opzioni" (oppure Maiusc + tasto destro).
-echo Con piu' di 15 file: tasto destro ^> Invia a ^> Progetto Unity.
+echo Oppure: tasto destro ^> Invia a ^> Progetto Unity (apre la finestra di scelta).
 if /i not "%~1"=="/quiet" pause
 exit /b 0
 

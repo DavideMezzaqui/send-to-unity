@@ -152,7 +152,7 @@ function Save-Shot($window, [string]$name) {
     } catch { Note "screenshot $name non riuscito: $($_.Exception.Message)" }
 }
 # Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
-function Menu([string[]]$paths, [string]$click = $null) {
+function Menu([string[]]$paths, $click = $null) {
     try {
         $items = [ExplorerMenu]::Submenu($paths, 'Invia a Unity', $click)
         if ([ExplorerMenu]::Info) { Note ('menu: ' + [ExplorerMenu]::Info) }

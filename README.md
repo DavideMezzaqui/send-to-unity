@@ -37,8 +37,9 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 
 - **Windows 11**: la voce è sotto "Mostra altre opzioni". Più veloce: **Maiusc + tasto destro**,
   che apre subito il menu completo.
-- **Più di 15 file**: Windows nasconde le voci di questo tipo. Usa tasto destro >
-  **Invia a** > **Progetto Unity**, che funziona con qualsiasi numero di file.
+- Funziona anche con molti file insieme (provato con 40): Windows avvia un'istanza per file
+  e il programma le raccoglie in un unico invio. In alternativa c'è tasto destro >
+  **Invia a** > **Progetto Unity**, che apre direttamente la finestra di scelta.
 - Unity importa da solo solo se in *Preferences > Asset Pipeline* è attivo **Auto Refresh**
   e non sei in Play mode. Altrimenti premi Ctrl+R in Unity.
 

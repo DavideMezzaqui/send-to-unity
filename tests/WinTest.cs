@@ -233,7 +233,7 @@ public static class ExplorerMenu {
                     uint id = Id(sub, j, out ignored);
                     string text = Text(sub, j);
                     report.Append(" [" + text + " id " + id + "]");
-                    if (upTo >= 4 && click != null && text.StartsWith(click)) {
+                    if (upTo >= 4 && !string.IsNullOrEmpty(click) && text.StartsWith(click)) {
                         var info = new InvokeInfo();
                         info.Size = Marshal.SizeOf(typeof(InvokeInfo));
                         info.Verb = (IntPtr)(id - First);
@@ -252,7 +252,8 @@ public static class ExplorerMenu {
     }
 
     // Voci del sottomenu che ha come titolo parent (null se la voce manca);
-    // se click non e' null, clicca la prima voce che inizia con quel testo.
+    // se click non e' vuoto, clicca la prima voce che inizia con quel testo
+    // (da PowerShell un $null passato come stringa arriva come "").
     public static List<string> Submenu(string[] paths, string parent, string click) {
         Invoked = false;
         Info = "";
@@ -287,7 +288,7 @@ public static class ExplorerMenu {
                 for (int j = 0; j < n; j++) {
                     string itemText = Text(sub, j);
                     items.Add(itemText);
-                    if (click != null && !Invoked && itemText.StartsWith(click)) {
+                    if (!string.IsNullOrEmpty(click) && !Invoked && itemText.StartsWith(click)) {
                         IntPtr ignored;
                         uint id = Id(sub, j, out ignored);
                         var info = new InvokeInfo();
