@@ -319,6 +319,8 @@ try {
     $leaders = ([regex]::Matches((Log-Since $mark), 'leader to:')).Count
     Note "istanze che hanno copiato: $leaders su 40 avviate da Explorer"
     Check ($leaders -ge 1 -and $leaders -le 2) 'i file sono stati raccolti da una sola istanza (al massimo due)'
+    $toasts = ([regex]::Matches((Log-Since $mark), 'notifica: ')).Count
+    Check ($toasts -eq $leaders) "una sola notifica per invio, a copie finite (notifiche: $toasts)"
 
     Write-Host '--- 5. file gia presenti'
     [IO.File]::WriteAllText($albedo, 'A2')

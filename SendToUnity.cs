@@ -329,20 +329,24 @@ namespace SendToUnity
         static int Quick(string project, string folder, Collector collector)
         {
             var job = new CopyJob(project, folder, false);
-            bool first = true;
-            for (var files = collector.Take(); files.Count > 0; files = collector.Close())
+            var files = collector.Take();
+            while (files.Count > 0)
             {
                 if (!job.Run(files))
                 {
                     collector.Close();
                     return 0;
                 }
-                if (first)
-                {
-                    first = false;
-                    Projects.FocusEditor(project);
-                }
-                Ui.ShowResult(job.Result);   // mentre la notifica è visibile possono arrivare altri file
+                // con molti file Explorer avvia le istanze a ondate: si copia finché ne arrivano
+                collector.WaitQuiet(500, 3000);
+                files = collector.Take();
+                if (files.Count > 0) continue;
+
+                // tutto copiato: ora Unity in primo piano, così importa tutto in una volta
+                Projects.FocusEditor(project);
+                Log.Write("notifica: " + job.Result.Copied + " copiati, " + job.Result.Skipped + " saltati");
+                Ui.ShowResult(job.Result);
+                files = collector.Close();   // eventuali file arrivati mentre la notifica era visibile
             }
             Remember(project, folder);
             return job.Result.Errors.Count > 0 ? 1 : 0;
