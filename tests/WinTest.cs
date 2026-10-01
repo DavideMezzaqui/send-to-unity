@@ -203,6 +203,54 @@ public static class ExplorerMenu {
         return info.Id;
     }
 
+    // Diagnostica: esegue solo i primi "upTo" passi di quello che fa Explorer con il menu
+    // 1 = crea il menu, 2 = legge le voci principali, 3 = apre il sottomenu (WM_INITMENUPOPUP)
+    // e ne legge le voci, 4 = clic sulla voce che inizia con click.
+    public static string Steps(string[] paths, string parent, int upTo, string click) {
+        var report = new StringBuilder();
+        var pidls = new List<IntPtr>();
+        IContextMenu menu = null;
+        IntPtr popup = CreatePopupMenu();
+        try {
+            menu = Open(paths, pidls);
+            int hr = menu.QueryContextMenu(popup, 0, First, Last, 0);
+            report.Append("QueryContextMenu " + hr.ToString("x"));
+            if (upTo < 2) return report.ToString();
+            int count = GetMenuItemCount(popup);
+            for (int i = 0; i < count; i++) {
+                if (Text(popup, i).Replace("&", "") != parent) continue;
+                if (upTo < 3) return report.Append(", voce trovata").ToString();
+                IntPtr sub;
+                Id(popup, i, out sub);
+                report.Append(", voci prima " + GetMenuItemCount(sub));
+                var menu3 = menu as IContextMenu3;
+                IntPtr ignoredResult;
+                if (menu3 != null) report.Append(", HandleMenuMsg2 " + menu3.HandleMenuMsg2(0x0117, sub, (IntPtr)i, out ignoredResult).ToString("x"));
+                int n = GetMenuItemCount(sub);
+                report.Append(", voci dopo " + n + ":");
+                for (int j = 0; j < n; j++) {
+                    IntPtr ignored;
+                    uint id = Id(sub, j, out ignored);
+                    string text = Text(sub, j);
+                    report.Append(" [" + text + " id " + id + "]");
+                    if (upTo >= 4 && click != null && text.StartsWith(click)) {
+                        var info = new InvokeInfo();
+                        info.Size = Marshal.SizeOf(typeof(InvokeInfo));
+                        info.Verb = (IntPtr)(id - First);
+                        info.Show = 1;
+                        report.Append(" clic " + menu.InvokeCommand(ref info).ToString("x"));
+                    }
+                }
+                return report.ToString();
+            }
+            return report.Append(", voce assente").ToString();
+        } finally {
+            DestroyMenu(popup);
+            if (menu != null) Marshal.ReleaseComObject(menu);
+            foreach (IntPtr p in pidls) CoTaskMemFree(p);
+        }
+    }
+
     // Voci del sottomenu che ha come titolo parent (null se la voce manca);
     // se click non e' null, clicca la prima voce che inizia con quel testo.
     public static List<string> Submenu(string[] paths, string parent, string click) {
@@ -225,17 +273,15 @@ public static class ExplorerMenu {
                 uint parentId = Id(popup, i, out sub);
                 Info = "id voce " + parentId + ", sottomenu " + sub + ", voci " + (sub == IntPtr.Zero ? -1 : GetMenuItemCount(sub));
                 if (sub == IntPtr.Zero) return new List<string>();
-                if (GetMenuItemCount(sub) == 0) {
-                    var menu3 = menu as IContextMenu3;
-                    IntPtr ignoredResult;
-                    if (menu3 != null) menu3.HandleMenuMsg2(0x0117, sub, (IntPtr)i, out ignoredResult);   // WM_INITMENUPOPUP
-                    Info += ", dopo HandleMenuMsg2 " + GetMenuItemCount(sub);
-                }
-                if (GetMenuItemCount(sub) == 0) {
+                // come Explorer: prima di mostrare il sottomenu gli manda WM_INITMENUPOPUP
+                var menu3 = menu as IContextMenu3;
+                IntPtr ignoredResult;
+                if (menu3 != null) menu3.HandleMenuMsg2(0x0117, sub, (IntPtr)i, out ignoredResult);
+                else {
                     var menu2 = menu as IContextMenu2;
                     if (menu2 != null) menu2.HandleMenuMsg(0x0117, sub, (IntPtr)i);
-                    Info += ", dopo HandleMenuMsg " + GetMenuItemCount(sub);
                 }
+                Info += ", dopo WM_INITMENUPOPUP " + GetMenuItemCount(sub);
                 var items = new List<string>();
                 int n = GetMenuItemCount(sub);
                 for (int j = 0; j < n; j++) {

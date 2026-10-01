@@ -46,34 +46,22 @@ function Set-Variant([bool]$parentPlayer, [bool]$childPlayer, [bool]$extended) {
     $item.Close(); $shell.Close(); $key.Close()
 }
 
-function Count-Calls {
-    Start-Sleep -Seconds 3
+function Count-Calls([int]$seconds) {
+    Start-Sleep -Seconds $seconds
     if ([IO.File]::Exists($marker)) { @([IO.File]::ReadAllLines($marker) | Where-Object { $_.Trim() }).Count } else { 0 }
 }
 
-$variants = @(
-    @{ Name = 'SubCommands, nessun Player';            Parent = $false; Child = $false; Ext = $false },
-    @{ Name = 'SubCommands, Player sulla principale';  Parent = $true;  Child = $false; Ext = $false },
-    @{ Name = 'SubCommands, Player sulla sottovoce';   Parent = $false; Child = $true;  Ext = $false },
-    @{ Name = 'SubCommands, Player su entrambe';       Parent = $true;  Child = $true;  Ext = $false },
-    @{ Name = 'ExtendedSubCommandsKey, nessun Player'; Parent = $false; Child = $false; Ext = $true },
-    @{ Name = 'ExtendedSubCommandsKey, Player sottovoce'; Parent = $false; Child = $true; Ext = $true }
-)
-
-foreach ($v in $variants) {
-    Set-Variant $v.Parent $v.Child $v.Ext
-    foreach ($selection in @(@{ Count = 1; Files = @($one) }, @{ Count = 20; Files = $twenty })) {
+# Configurazione scelta per il programma: SubCommands + Player sulla principale e sulle sottovoci
+Set-Variant $true $true $false
+foreach ($selection in @(@{ Count = 1; Files = @($one); Wait = 5 }, @{ Count = 20; Files = $twenty; Wait = 10 })) {
+    foreach ($upTo in 1..4) {
         Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
         try {
-            $items = [ExplorerMenu]::Submenu([string[]]$selection.Files, 'Diagnosi Unity', $null)
-            $info = [ExplorerMenu]::Info
-            $afterRead = Count-Calls
-            $shown = if ($null -eq $items) { 'voce assente' } else { 'voci: ' + ($items -join ' / ') }
-            $items = [ExplorerMenu]::Submenu([string[]]$selection.Files, 'Diagnosi Unity', 'Voce uno')
-            $afterClick = Count-Calls
-            Write-Host ("DIAG {0} | {1} file | {2} | {3} | partenze dopo la lettura: {4} | dopo il clic: {5}" -f $v.Name, $selection.Count, $shown, $info, $afterRead, $afterClick)
+            $report = [ExplorerMenu]::Steps([string[]]$selection.Files, 'Diagnosi Unity', $upTo, 'Voce uno')
+            $calls = Count-Calls $selection.Wait
+            Write-Host ("DIAG {0} file, fino al passo {1} | {2} | partenze: {3}" -f $selection.Count, $upTo, $report, $calls)
         } catch {
-            Write-Host ("DIAG {0} | {1} file | errore: {2}" -f $v.Name, $selection.Count, $_.Exception.Message)
+            Write-Host ("DIAG {0} file, fino al passo {1} | errore: {2}" -f $selection.Count, $upTo, $_.Exception.Message)
         }
     }
 }
