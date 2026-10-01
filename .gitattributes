@@ -1,3 +1,4 @@
+# I .cmd restano con i fine riga di Windows anche nello zip scaricato da GitHub
+*.cmd -text
 *.ps1 text eol=crlf
-*.vbs text eol=crlf
-*.cmd text eol=crlf
+*.cs text eol=crlf
