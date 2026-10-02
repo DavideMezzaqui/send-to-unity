@@ -113,11 +113,13 @@ namespace SendToUnity
             string pipeName = "SendToUnity_" + Process.GetCurrentProcess().SessionId + "_" + id;
             using (var mutex = new Mutex(false, @"Local\SendToUnity_" + id))
             {
-                DateTime giveUp = DateTime.UtcNow.AddMinutes(2);
+                // chi arriva mentre la prima istanza sta ancora copiando aspetta che finisca
+                DateTime giveUp = DateTime.UtcNow.AddMinutes(30);
+                int wait = 0;
                 while (true)
                 {
                     bool owned;
-                    try { owned = mutex.WaitOne(0); }
+                    try { owned = mutex.WaitOne(wait); }
                     catch (AbandonedMutexException) { owned = true; }
 
                     if (owned)
@@ -138,7 +140,7 @@ namespace SendToUnity
                     if (Collector.TrySend(pipeName, files)) return 0;
                     if (DateTime.UtcNow > giveUp)
                         throw new Exception("Un altro invio verso lo stesso progetto è ancora in corso. Riprova tra poco.");
-                    Thread.Sleep(50);
+                    wait = 500;   // da qui si aspetta il mutex invece di riprovare a vuoto
                 }
             }
         }
@@ -401,30 +403,40 @@ namespace SendToUnity
         public string Folder;
         public string Destination;
         public bool Moved;
-        public int Copied;
-        public int Skipped;
+        public int Copied;          // file inviati (i .meta che li accompagnano non contano)
+        public int Skipped;         // già presenti e lasciati com'erano
+        public int AlreadyThere;    // erano già proprio in quella cartella
+        public bool AccessDenied;   // Windows ha negato la scrittura
+        public string FirstTarget;  // primo file arrivato: viene selezionato aprendo la cartella
         public readonly List<string> Errors = new List<string>();
     }
 
     class CopyJob
     {
         // File di sistema che non devono finire negli Assets quando si copia una cartella
-        static readonly string[] Junk = { "Thumbs.db", "desktop.ini", ".DS_Store" };
+        static readonly string[] JunkFiles = { "Thumbs.db", "desktop.ini", ".DS_Store" };
 
         class Step
         {
             public string Source;
             public string Target;
             public bool Conflict;
+            public bool IsMeta;   // .meta di Unity che accompagna un file o una cartella
+            public Step Owner;    // il file che il .meta accompagna (null per le cartelle)
+            public bool Done;
         }
 
         public readonly Result Result;
+        readonly string project;
         readonly string destination;
         readonly bool move;
         bool? overwrite;   // chiesto una volta sola per invio
+        // cartelle d'origine e dove finiscono: spostando, servono per portare i .meta delle cartelle
+        readonly Dictionary<string, string> folderTargets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         public CopyJob(string project, string folder, bool move)
         {
+            this.project = project;
             this.move = move;
             destination = Path.Combine(project, folder.Replace('/', '\\'));
             Result = new Result { Project = project, Folder = folder, Destination = destination, Moved = move };
@@ -453,32 +465,52 @@ namespace SendToUnity
             foreach (string folder in folders)
             {
                 try { Directory.CreateDirectory(folder); }
-                catch (Exception ex) { Result.Errors.Add(Path.GetFileName(folder) + ": " + ex.Message); }
+                catch (Exception ex) { AddError(Path.GetFileName(folder), ex); }
             }
-            foreach (var step in steps)
+
+            using (var progress = new Progress(Ui.Where(Result), steps.Count(s => !s.IsMeta)))
             {
-                if (step.Conflict && overwrite != true)
+                foreach (var step in steps.Where(s => !s.IsMeta))
                 {
-                    Result.Skipped++;
-                    continue;
+                    progress.Step();
+                    if (step.Conflict && overwrite != true)
+                    {
+                        Result.Skipped++;
+                        continue;
+                    }
+                    try
+                    {
+                        Retry(() => Transfer(step));
+                        step.Done = true;
+                        Result.Copied++;
+                        if (Result.FirstTarget == null) Result.FirstTarget = step.Target;
+                    }
+                    catch (Exception ex)
+                    {
+                        AddError(Path.GetFileName(step.Source), ex);
+                        Log.Write("errore su " + step.Source + ": " + ex.Message);
+                    }
                 }
-                try
-                {
-                    Transfer(step);
-                    Result.Copied++;
-                }
-                catch (Exception ex)
-                {
-                    Result.Errors.Add(Path.GetFileName(step.Source) + ": " + ex.Message);
-                    Log.Write("errore su " + step.Source + ": " + ex.Message);
-                }
+            }
+            // poi i .meta, che seguono solo i file arrivati davvero
+            foreach (var step in steps.Where(s => s.IsMeta))
+            {
+                if (step.Owner != null && !step.Owner.Done) continue;   // file saltato: il .meta resta con lui
+                try { TransferMeta(step); }
+                catch (Exception ex) { Log.Write("meta " + step.Source + ": " + ex.Message); }
             }
             if (move)
             {
-                foreach (string root in movedRoots) RemoveEmptyFolders(root);
+                foreach (string root in movedRoots) Cleanup(root);
             }
             Log.Write("copiati " + Result.Copied + ", saltati " + Result.Skipped + ", errori " + Result.Errors.Count + " in " + destination);
             return true;
+        }
+
+        void AddError(string name, Exception ex)
+        {
+            if (ex is UnauthorizedAccessException) Result.AccessDenied = true;
+            Result.Errors.Add(name + ": " + ex.Message);
         }
 
         List<Step> Plan(List<string> sources, List<string> folders, List<string> movedRoots)
@@ -486,6 +518,8 @@ namespace SendToUnity
             var steps = new List<Step>();
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var assets = new Dictionary<string, Step>(StringComparer.OrdinalIgnoreCase);
+            var metas = new List<KeyValuePair<string, string>>();   // .meta da valutare: origine, destinazione
 
             foreach (string raw in sources)
             {
@@ -497,13 +531,19 @@ namespace SendToUnity
                     continue;
                 }
                 if (!seen.Add(source)) continue;
+                // i .meta non si mandano da soli: viaggiano con il loro file (vedi sotto)
+                if (IsMeta(source) && File.Exists(source)) continue;
 
                 string name = Path.GetFileName(source);
                 string target = Path.Combine(destination, name);
 
                 if (Directory.Exists(source))
                 {
-                    if (Paths.Same(source, target)) continue;   // è già lì
+                    if (Paths.Same(source, target))
+                    {
+                        Result.AlreadyThere++;
+                        continue;
+                    }
                     if (Paths.IsInside(destination, source))
                     {
                         Result.Errors.Add(name + ": non posso copiare una cartella dentro se stessa");
@@ -511,23 +551,52 @@ namespace SendToUnity
                     }
                     if (move) movedRoots.Add(source);
                     folders.Add(target);
+                    folderTargets[source] = target;
+                    metas.Add(new KeyValuePair<string, string>(source + ".meta", target + ".meta"));
                     var files = new List<string>();
                     Walk(source, files, folders, target);
                     foreach (string file in files)
                     {
-                        if (Junk.Contains(Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)) continue;
-                        AddStep(steps, targets, file, Path.Combine(target, file.Substring(source.Length + 1)));
+                        string fileTarget = Path.Combine(target, file.Substring(source.Length + 1));
+                        if (IsMeta(file)) metas.Add(new KeyValuePair<string, string>(file, fileTarget));
+                        else assets[file] = AddStep(steps, targets, file, fileTarget);
                     }
                 }
                 else if (File.Exists(source))
                 {
-                    if (Paths.Same(source, target)) continue;
-                    AddStep(steps, targets, source, target);
+                    if (Paths.Same(source, target))
+                    {
+                        Result.AlreadyThere++;
+                        continue;
+                    }
+                    assets[source] = AddStep(steps, targets, source, target);
+                    metas.Add(new KeyValuePair<string, string>(source + ".meta", target + ".meta"));
                 }
                 else
                 {
-                    Result.Errors.Add(name + ": non trovato");
+                    Result.Errors.Add(name + (InsideArchive(source)
+                        ? ": è dentro un archivio (zip), va estratto prima"
+                        : ": non trovato"));
                 }
+            }
+
+            // .meta di Unity: spostando seguono sempre il loro file, così Unity non perde i riferimenti;
+            // copiando si portano solo da un altro progetto (dentro lo stesso darebbero GUID doppi).
+            // Un .meta che il progetto ha già non viene mai sostituito (vedi TransferMeta).
+            var seenMeta = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var meta in metas)
+            {
+                if (!seenMeta.Add(meta.Key) || !File.Exists(meta.Key)) continue;
+                if (!move && Paths.IsInside(meta.Key, project)) continue;
+                string ownerPath = meta.Key.Substring(0, meta.Key.Length - ".meta".Length);
+                Step owner;
+                if (!assets.TryGetValue(ownerPath, out owner))
+                {
+                    // .meta di una cartella: spostando ci pensa Cleanup, che sa se la cartella è stata svuotata
+                    if (move || !Directory.Exists(ownerPath)) continue;   // altrimenti è un .meta orfano: resta dov'è
+                    owner = null;
+                }
+                steps.Add(new Step { Source = meta.Key, Target = meta.Value, IsMeta = true, Owner = owner });
             }
             return steps;
         }
@@ -537,25 +606,59 @@ namespace SendToUnity
         {
             try
             {
-                files.AddRange(Directory.GetFiles(folder));
+                foreach (string file in Directory.GetFiles(folder))
+                {
+                    if (!IsJunk(Path.GetFileName(file))) files.Add(file);
+                }
                 foreach (string sub in Directory.GetDirectories(folder))
                 {
-                    string subTarget = Path.Combine(target, Path.GetFileName(sub));
+                    string name = Path.GetFileName(sub);
+                    // .git, .svn e simili, e i resti degli zip fatti su Mac: non sono asset
+                    if (name.StartsWith(".") || name.Equals("__MACOSX", StringComparison.OrdinalIgnoreCase)) continue;
+                    string subTarget = Path.Combine(target, name);
                     folders.Add(subTarget);
+                    folderTargets[sub] = subTarget;
                     Walk(sub, files, folders, subTarget);
                 }
             }
             catch (Exception ex)
             {
-                Result.Errors.Add(Path.GetFileName(folder) + ": " + ex.Message);
+                AddError(Path.GetFileName(folder), ex);
             }
         }
 
-        static void AddStep(List<Step> steps, HashSet<string> targets, string source, string target)
+        static bool IsJunk(string name)
+        {
+            return name.StartsWith("._") || JunkFiles.Contains(name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        static bool IsMeta(string path)
+        {
+            return path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Explorer mostra il contenuto degli zip come cartelle, ma quei file sul disco non esistono
+        static bool InsideArchive(string path)
+        {
+            try
+            {
+                for (string parent = Path.GetDirectoryName(path); !string.IsNullOrEmpty(parent); parent = Path.GetDirectoryName(parent))
+                {
+                    if (File.Exists(parent)) return true;
+                    if (Directory.Exists(parent)) return false;
+                }
+            }
+            catch (Exception) { }
+            return false;
+        }
+
+        static Step AddStep(List<Step> steps, HashSet<string> targets, string source, string target)
         {
             // due file con lo stesso nome finirebbero uno sull'altro: conta come file già presente
             bool conflict = !targets.Add(target) || File.Exists(target) || Directory.Exists(target);
-            steps.Add(new Step { Source = source, Target = target, Conflict = conflict });
+            var step = new Step { Source = source, Target = target, Conflict = conflict };
+            steps.Add(step);
+            return step;
         }
 
         void Transfer(Step step)
@@ -566,35 +669,160 @@ namespace SendToUnity
             if (File.Exists(step.Target) && (File.GetAttributes(step.Target) & FileAttributes.ReadOnly) != 0)
                 throw new IOException("il file nel progetto è in sola lettura (serve il checkout?)");
 
-            if (move)
-            {
-                if (File.Exists(step.Target)) File.Delete(step.Target);
-                File.Move(step.Source, step.Target);
-            }
-            else
+            if (!move)
             {
                 File.Copy(step.Source, step.Target, true);
             }
-            // una copia di un file in sola lettura resterebbe bloccata anche dentro Unity
-            var attributes = File.GetAttributes(step.Target);
-            if ((attributes & FileAttributes.ReadOnly) != 0)
-                File.SetAttributes(step.Target, attributes & ~FileAttributes.ReadOnly);
+            else if (File.Exists(step.Target))
+            {
+                // prima la copia e poi via l'originale: se qualcosa va storto non si perde niente
+                File.Copy(step.Source, step.Target, true);
+                File.Delete(step.Source);
+            }
+            else
+            {
+                File.Move(step.Source, step.Target);
+            }
+            ClearReadOnly(step.Target);
         }
 
-        static void RemoveEmptyFolders(string folder)
+        // Il .meta segue il suo file ma non sostituisce mai quello che il progetto ha già:
+        // lì ci sono il GUID e le impostazioni a cui Unity collega i riferimenti
+        void TransferMeta(Step step)
+        {
+            if (File.Exists(step.Target))
+            {
+                if (move) Retry(() => File.Delete(step.Source));   // il file è stato spostato: il vecchio .meta non serve più
+                return;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(step.Target));
+            Retry(() =>
+            {
+                if (move) File.Move(step.Source, step.Target);
+                else File.Copy(step.Source, step.Target, false);
+            });
+            ClearReadOnly(step.Target);
+        }
+
+        // Unity tiene aperti i file mentre li importa (con file grandi anche qualche secondo): si riprova fino a 5 s
+        static void Retry(Action action)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    action();
+                    return;
+                }
+                catch (IOException ex)
+                {
+                    int code = ex.HResult & 0xFFFF;
+                    if ((code != 32 && code != 33) || attempt >= 25) throw;   // 32, 33 = file in uso
+                    Thread.Sleep(200);
+                }
+            }
+        }
+
+        // una copia di un file in sola lettura resterebbe bloccata anche dentro Unity
+        static void ClearReadOnly(string file)
+        {
+            var attributes = File.GetAttributes(file);
+            if ((attributes & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+        }
+
+        // Dopo uno spostamento toglie dall'origine le cartelle rimaste vuote (o con soli file di sistema),
+        // dal basso verso l'alto, e porta il loro .meta accanto alla cartella di destinazione
+        void Cleanup(string folder)
         {
             try
             {
-                foreach (string sub in Directory.GetDirectories(folder)) RemoveEmptyFolders(sub);
-                // se restano solo file di sistema come Thumbs.db la cartella si può togliere
+                foreach (string sub in Directory.GetDirectories(folder)) Cleanup(sub);
                 var left = Directory.GetFileSystemEntries(folder);
-                if (left.All(f => File.Exists(f) && Junk.Contains(Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)))
-                {
-                    foreach (string f in left) File.Delete(f);
-                    Directory.Delete(folder);
-                }
+                if (!left.All(f => File.Exists(f) && IsJunk(Path.GetFileName(f)))) return;   // ci sono file saltati
+                foreach (string f in left) File.Delete(f);
+                Directory.Delete(folder);
+
+                string meta = folder + ".meta";
+                string target;
+                if (!File.Exists(meta) || !folderTargets.TryGetValue(folder, out target)) return;
+                if (File.Exists(target + ".meta")) File.Delete(meta);
+                else File.Move(meta, target + ".meta");
             }
-            catch (Exception) { }
+            catch (Exception ex)
+            {
+                Log.Write("pulizia di " + folder + ": " + ex.Message);
+            }
+        }
+    }
+
+    // Notifica "Copia in corso" su un thread a parte: compare solo se la copia dura più di un attimo
+    class Progress : IDisposable
+    {
+        readonly object sync = new object();
+        readonly string where;
+        readonly int total;
+        readonly System.Threading.Timer delay;
+        int done;
+        bool finished;
+        Thread thread;
+
+        public Progress(string where, int total)
+        {
+            this.where = where;
+            this.total = total;
+            delay = new System.Threading.Timer(delegate { Show(); }, null, 800, Timeout.Infinite);
+        }
+
+        public bool Finished
+        {
+            get { lock (sync) return finished; }
+        }
+
+        public string Text
+        {
+            get { return "Copia in corso: " + Math.Min(Thread.VolatileRead(ref done), total) + " di " + total; }
+        }
+
+        public void Step()
+        {
+            Interlocked.Increment(ref done);
+        }
+
+        void Show()
+        {
+            lock (sync)
+            {
+                if (finished) return;
+                thread = new Thread(new ThreadStart(RunToast));
+                thread.SetApartmentState(ApartmentState.STA);
+                thread.IsBackground = true;
+                thread.Start();
+            }
+        }
+
+        void RunToast()
+        {
+            try
+            {
+                using (var toast = new Toast(Text, where, null, null, this)) Application.Run(toast);
+            }
+            catch (Exception ex)
+            {
+                Log.Write("avanzamento: " + ex.Message);
+            }
+        }
+
+        public void Dispose()
+        {
+            Thread running;
+            lock (sync)
+            {
+                finished = true;
+                running = thread;
+            }
+            delay.Dispose();
+            if (running != null) running.Join(2000);   // la notifica si chiude da sola appena vede che è finita
         }
     }
 
@@ -607,10 +835,16 @@ namespace SendToUnity
         public bool Open;
         public long HubTime;
         public long LastUsed;
+        public string Hint;   // cartella che lo contiene, solo se c'è un altro progetto con lo stesso nome
+
+        public string DisplayName
+        {
+            get { return Hint == null ? Name : Name + "  (" + Hint + ")"; }
+        }
 
         public override string ToString()
         {
-            return Open ? Name + "   (aperto in Unity)" : Name;
+            return Open ? DisplayName + "   (aperto in Unity)" : DisplayName;
         }
     }
 
@@ -644,12 +878,32 @@ namespace SendToUnity
                 info.LastUsed = prefs == null ? 0 : prefs.LastUsed;
                 if (checkOpen) info.Open = IsOpen(info.Path);
             }
+            MarkDuplicates(found.Values);
             return found.Values
                 .OrderByDescending(p => p.Open)
                 .ThenByDescending(p => p.LastUsed)
                 .ThenByDescending(p => p.HubTime)
                 .ThenBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
+        }
+
+        // Due progetti con lo stesso nome: accanto al nome compare la cartella che li contiene
+        static void MarkDuplicates(IEnumerable<ProjectInfo> projects)
+        {
+            foreach (var group in projects.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+            {
+                foreach (var p in group)
+                {
+                    string parent = Path.GetDirectoryName(p.Path) ?? p.Path;
+                    string name = Path.GetFileName(parent);
+                    p.Hint = string.IsNullOrEmpty(name) ? parent : name;
+                }
+                // se anche le cartelle che li contengono si chiamano uguale, si mostra il percorso intero
+                if (group.Select(p => p.Hint).Distinct(StringComparer.OrdinalIgnoreCase).Count() < group.Count())
+                {
+                    foreach (var p in group) p.Hint = Path.GetDirectoryName(p.Path) ?? p.Path;
+                }
+            }
         }
 
         static void Add(Dictionary<string, ProjectInfo> found, string path, long hubTime)
@@ -1051,7 +1305,7 @@ namespace SendToUnity
                         {
                             var p = projects[i];
                             string folder = settings.FolderFor(p.Path);
-                            string label = Escape(p.Name) + (folder != null ? "   →  " + Escape(folder) : "");
+                            string label = Escape(p.DisplayName) + (folder != null ? "   →  " + Escape(folder) : "");
                             AddItem(shell, i.ToString("00"), label, exe + " --to " + Paths.Quote(p.Path) + " \"%1\"", false);
                         }
                         AddItem(shell, "99", "Scegli progetto e cartella...", exe + " --pick \"%1\"", projects.Count > 0);
@@ -1192,21 +1446,39 @@ namespace SendToUnity
             {
                 var lines = result.Errors.Take(10).ToList();
                 if (result.Errors.Count > 10) lines.Add("... e altri " + (result.Errors.Count - 10));
-                Box(Summary(result) + ".\n\nProblemi:\n" + string.Join("\n", lines),
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                string text = Summary(result) + ".\n\nProblemi:\n" + string.Join("\n", lines);
+                if (result.AccessDenied)
+                    text += "\n\nSe in Sicurezza di Windows è attivo \"Accesso controllato alle cartelle\" " +
+                            "(Protezione da ransomware), aggiungi SendToUnity.exe alle app consentite.";
+                Box(text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            if (result.Copied + result.Skipped == 0) return;
-            string where = Path.GetFileName(result.Project) + "  ›  " + result.Folder;
-            using (var toast = new Toast(Summary(result), where, result.Destination))
+            // cliccando la notifica si apre la cartella con il primo file arrivato già selezionato
+            string open = result.FirstTarget ?? (Directory.Exists(result.Destination) ? result.Destination : null);
+            string title = (result.Copied > 0 ? "\u2713  " : "") + Summary(result);
+            using (var toast = new Toast(title, Where(result), open != null ? "Clic per aprire la cartella" : null, open, null))
                 Application.Run(toast);
+        }
+
+        // "Progetto  ›  Assets/Cartella"
+        public static string Where(Result result)
+        {
+            return Path.GetFileName(result.Project) + "  \u203A  " + result.Folder;
         }
 
         static string Summary(Result result)
         {
             string done = result.Moved ? "spostat" : "inviat";
+            if (result.Copied == 0)
+            {
+                if (result.Skipped == 1) return "Nessun file " + done + "o: era già presente";
+                if (result.Skipped > 1) return "Nessun file " + done + "o: erano già presenti";
+                if (result.AlreadyThere > 0) return "I file sono già in questa cartella";
+                return "Nessun file " + done + "o";
+            }
             string text = result.Copied == 1 ? "1 file " + done + "o" : result.Copied + " file " + done + "i";
-            if (result.Skipped > 0) text += ", " + result.Skipped + (result.Skipped == 1 ? " saltato" : " saltati");
+            if (result.Skipped > 0)
+                text += ", " + result.Skipped + (result.Skipped == 1 ? " saltato (già presente)" : " saltati (già presenti)");
             return text;
         }
     }
@@ -1225,6 +1497,7 @@ namespace SendToUnity
         readonly ComboBox projectCombo = new ComboBox();
         readonly ComboBox folderCombo = new ComboBox();
         readonly CheckBox moveCheck = new CheckBox();
+        readonly Button browse;
 
         public SendDialog(List<string> files, List<ProjectInfo> projects, Settings settings, string preselect, Collector collector)
         {
@@ -1270,7 +1543,7 @@ namespace SendToUnity
             projectCombo.Width = width;
             projectCombo.Margin = new Padding(0, 0, Ui.S(6), 0);
             projectCombo.Items.AddRange(projects.Cast<object>().ToArray());
-            var browse = new Button { Name = "browseButton", Text = "Sfoglia...", AutoSize = true, Margin = Padding.Empty };
+            browse = new Button { Name = "browseButton", Text = "Sfoglia...", AutoSize = true, Margin = Padding.Empty };
             AddRow(grid, projectCombo, browse);
 
             pathLabel.Name = "pathLabel";
@@ -1331,7 +1604,24 @@ namespace SendToUnity
             collector.Arrived += OnArrived;
 
             SelectInitial(projects, preselect);
+            FitDropDown(projectCombo);
+            if (projectCombo.Items.Count == 0)
+            {
+                pathLabel.Text = "Nessun progetto trovato in Unity Hub: aggiungine uno con \"Sfoglia...\".";
+                folderCombo.Text = "Assets";
+                ActiveControl = browse;
+            }
             UpdateFilesLabel();
+        }
+
+        // L'elenco che si apre è largo quanto la voce più lunga (entro metà schermo)
+        static void FitDropDown(ComboBox combo)
+        {
+            int widest = 0;
+            var longest = combo.Items.Cast<object>().Select(i => i.ToString()).OrderByDescending(t => t.Length).Take(30);
+            foreach (string text in longest) widest = Math.Max(widest, TextRenderer.MeasureText(text, combo.Font).Width);
+            int max = Screen.FromControl(combo).WorkingArea.Width / 2;
+            combo.DropDownWidth = Math.Max(combo.Width, Math.Min(max, widest + SystemInformation.VerticalScrollBarWidth + Ui.S(12)));
         }
 
         static Label Caption(string text, int top)
@@ -1381,6 +1671,7 @@ namespace SendToUnity
             }
             pathLabel.Text = project.Path;
             folderCombo.Items.AddRange(Folders.Existing(project.Path).Cast<object>().ToArray());
+            FitDropDown(folderCombo);
             folderCombo.Text = settings.FolderFor(project.Path) ?? "Assets";
         }
 
@@ -1501,7 +1792,7 @@ namespace SendToUnity
                 Margin = Padding.Empty
             };
 
-            string where = Path.GetFileName(result.Project) + "  \u203A  " + result.Folder;
+            string where = Ui.Where(result);
             grid.Controls.Add(new Label
             {
                 AutoSize = true,
@@ -1560,17 +1851,22 @@ namespace SendToUnity
         }
     }
 
-    // Notifica in basso a destra che sparisce da sola e non ruba il focus a Unity
+    // Notifica in basso a destra che non ruba il focus a Unity: quella finale sparisce da sola,
+    // quella di avanzamento si aggiorna finché la copia non è finita
     class Toast : Form
     {
-        readonly string folder;
+        readonly string open;         // file o cartella da aprire con un clic (null = niente)
+        readonly Progress progress;   // non null: notifica di avanzamento
+        readonly Label titleLabel;
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+        bool placed;
 
-        public Toast(string title, string detail, string folder)
+        public Toast(string title, string detail, string hint, string open, Progress progress)
         {
-            this.folder = folder;
+            this.open = open;
+            this.progress = progress;
             Name = "toast";
-            Text = App.Name + " - notifica";
+            Text = App.Name + (progress == null ? " - notifica" : " - avanzamento");
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
@@ -1579,7 +1875,6 @@ namespace SendToUnity
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
             BackColor = Color.FromArgb(40, 40, 40);
             Font = SystemFonts.MessageBoxFont;
-            Cursor = Cursors.Hand;
 
             var panel = new FlowLayoutPanel
             {
@@ -1590,17 +1885,34 @@ namespace SendToUnity
                 Margin = Padding.Empty,
                 Padding = new Padding(Ui.S(16), Ui.S(12), Ui.S(22), Ui.S(12))
             };
-            panel.Controls.Add(Line("✓  " + title, Color.White, new Font(Font.FontFamily, Font.SizeInPoints + 1.5f, FontStyle.Bold), 0));
+            titleLabel = Line(title, Color.White, new Font(Font.FontFamily, Font.SizeInPoints + 1.5f, FontStyle.Bold), 0);
+            panel.Controls.Add(titleLabel);
             panel.Controls.Add(Line(detail, Color.FromArgb(220, 220, 220), Font, Ui.S(4)));
-            panel.Controls.Add(Line("Clic per aprire la cartella", Color.FromArgb(150, 150, 150), Font, Ui.S(2)));
+            if (hint != null) panel.Controls.Add(Line(hint, Color.FromArgb(150, 150, 150), Font, Ui.S(2)));
             Controls.Add(panel);
 
-            Click += delegate { OpenFolder(); };
-            panel.Click += delegate { OpenFolder(); };
-            foreach (Control label in panel.Controls) label.Click += delegate { OpenFolder(); };
+            if (open != null)
+            {
+                Cursor = Cursors.Hand;
+                Click += delegate { OpenTarget(); };
+                panel.Click += delegate { OpenTarget(); };
+                foreach (Control label in panel.Controls) label.Click += delegate { OpenTarget(); };
+            }
 
-            timer.Interval = 2600;
-            timer.Tick += delegate { Close(); };
+            if (progress == null)
+            {
+                timer.Interval = 2600;
+                timer.Tick += delegate { Close(); };
+            }
+            else
+            {
+                timer.Interval = 150;
+                timer.Tick += delegate
+                {
+                    if (progress.Finished) Close();
+                    else titleLabel.Text = progress.Text;
+                };
+            }
         }
 
         static Label Line(string text, Color color, Font font, int top)
@@ -1635,14 +1947,31 @@ namespace SendToUnity
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            var area = Screen.FromPoint(Control.MousePosition).WorkingArea;
-            Location = new Point(area.Right - Width - Ui.S(16), area.Bottom - Height - Ui.S(16));
+            placed = true;
+            Place();
             timer.Start();
         }
 
-        void OpenFolder()
+        // se il testo cambia lunghezza la notifica resta attaccata all'angolo in basso a destra
+        protected override void OnSizeChanged(EventArgs e)
         {
-            try { Process.Start("explorer.exe", Paths.Quote(folder)); }
+            base.OnSizeChanged(e);
+            if (placed) Place();
+        }
+
+        void Place()
+        {
+            var area = Screen.FromPoint(Control.MousePosition).WorkingArea;
+            Location = new Point(area.Right - Width - Ui.S(16), area.Bottom - Height - Ui.S(16));
+        }
+
+        void OpenTarget()
+        {
+            try
+            {
+                if (File.Exists(open)) Process.Start("explorer.exe", "/select," + Paths.Quote(open));
+                else Process.Start("explorer.exe", Paths.Quote(open));
+            }
             catch (Exception) { }
             Close();
         }

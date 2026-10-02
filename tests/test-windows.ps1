@@ -195,6 +195,28 @@ function Open-ClassicMenu {
     if ([Environment]::OSVersion.Version.Build -ge 22000) { Keys '{UP}' 300; Keys '{ENTER}' 1500 }
 }
 
+# Testi della notifica finale (titolo | progetto e cartella | suggerimento)
+function Toast-Text([int]$timeoutMs = 15000) {
+    $toast = Find-AnyWindow 'Invia a Unity - notifica' '*' $timeoutMs
+    if (-not $toast) { return '<nessuna notifica>' }
+    (@(Get-Controls $toast | Where-Object { $_.Class -like '*STATIC*' } | ForEach-Object { $_.Text }) -join ' | ')
+}
+function Click-Window($window) {
+    $point = [IntPtr]((10 -shl 16) -bor 10)
+    [void][Win]::PostMessage($window.Handle, 0x0201, [IntPtr]1, $point)          # WM_LBUTTONDOWN
+    [void][Win]::PostMessage($window.Handle, 0x0202, [IntPtr]::Zero, $point)     # WM_LBUTTONUP
+}
+function Find-ExplorerWindow([string]$folder, [int]$timeoutMs = 15000) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while ($watch.ElapsedMilliseconds -lt $timeoutMs) {
+        $window = @((New-Object -ComObject Shell.Application).Windows()) |
+            Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $folder } | Select-Object -First 1
+        if ($window) { return $window }
+        Start-Sleep -Milliseconds 300
+    }
+    $null
+}
+
 # Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
 function Menu([string[]]$paths, $click = $null) {
     try {
@@ -338,14 +360,41 @@ try {
     $proc = Start-Tool @('--to', (Q $p1), (Q $albedo))
     $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
     if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Salta questi') }
+    $text = Toast-Text
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') "con No il file resta com'era"
+    Check ($text -like 'Nessun file inviato: era gi* presente*') "la notifica dice che non e' arrivato niente ($text)"
+
+    # un file che sta gia' proprio nella cartella di destinazione
+    $proc = Start-Tool @('--to', (Q $p1), (Q (Join-Path $dest 'roccia_albedo.png')))
+    $text = Toast-Text
+    [void](Wait-Exit $proc)
+    Check ($text -like 'I file sono gi* in questa cartella*') "file gia' nella cartella: lo dice la notifica ($text)"
+
+    # Unity sta importando il file e lo tiene bloccato: il programma aspetta e riprova
+    [IO.File]::WriteAllText($albedo, 'A4')
+    $mark = Log-Mark
+    $lock = [IO.File]::Open((Join-Path $dest 'roccia_albedo.png'), 'Open', 'Read', 'None')
+    try {
+        $proc = Start-Tool @('--to', (Q $p1), (Q $albedo))
+        $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
+        if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Sostituisci') }
+        $progressWindow = Find-Window $proc.Id 'Invia a Unity - avanzamento' '*' 2500
+        Check ($null -ne $progressWindow) 'se la copia va per le lunghe compare la notifica di avanzamento'
+        if ($progressWindow) { Save-Shot $progressWindow '9-avanzamento' }
+    } finally { $lock.Dispose() }
+    [void](Wait-Exit $proc)
+    Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A4') 'file bloccato per un po (Unity che importa): il programma aspetta e lo sostituisce'
+    Check (-not (Log-Since $mark).Contains('errore su')) 'nessun errore per il file bloccato'
 
     Write-Host '--- 6. cartelle, dal menu'
     $flip = Join-Path $in 'Flipbook'
     New-File (Join-Path $flip 'frame_01.png') 'F1' | Out-Null
     New-File (Join-Path $flip 'sub\frame_02.png') 'F2' | Out-Null
     New-File (Join-Path $flip 'Thumbs.db') 'x' | Out-Null
+    New-File (Join-Path $flip '.git\config') 'git' | Out-Null
+    New-File (Join-Path $flip '__MACOSX\frame_01.png') 'mac' | Out-Null
+    New-File (Join-Path $flip '._frame_01.png') 'mac' | Out-Null
     [void][IO.Directory]::CreateDirectory((Join-Path $flip 'vuota'))
     $items = Menu @($flip) 'Gioco'
     Check ([ExplorerMenu]::Invoked) 'la voce compare anche sulle cartelle'
@@ -353,6 +402,7 @@ try {
     $flipDest = Join-Path $dest 'Flipbook'
     Check ((Exists (Join-Path $flipDest 'frame_01.png')) -and (Exists (Join-Path $flipDest 'sub\frame_02.png'))) 'cartella copiata con le sottocartelle'
     Check (-not (Exists (Join-Path $flipDest 'Thumbs.db'))) 'Thumbs.db non viene copiato'
+    Check (-not (Exists (Join-Path $flipDest '.git')) -and -not (Exists (Join-Path $flipDest '__MACOSX')) -and -not (Exists (Join-Path $flipDest '._frame_01.png'))) 'cartelle e file spazzatura (.git, __MACOSX, ._) non copiati'
     Check (Exists (Join-Path $flipDest 'vuota')) 'copiate anche le cartelle vuote'
     New-File (Join-Path $flip 'frame_03.png') 'F3' | Out-Null
     $proc = Start-Tool @('--to', (Q $p1), (Q $flip))
@@ -446,7 +496,87 @@ try {
         try { $explorer.Quit() } catch { }
     }
 
-    Write-Host '--- 10. disinstallazione'
+    Write-Host '--- 10. file .meta di Unity'
+    $p3 = Join-Path $work 'Altri\Gioco [Prova] & Co'
+    [void][IO.Directory]::CreateDirectory((Join-Path $p3 'ProjectSettings'))
+    $metaA = New-File (Join-Path $p3 'Assets\Tex\meta_a.png') 'MA'
+    New-File "$metaA.meta" 'GUID-A' | Out-Null
+    [void](Wait-Exit (Start-Tool @('--to', (Q $p1), (Q $metaA))))
+    Check ((Read-File (Join-Path $dest 'meta_a.png.meta')) -eq 'GUID-A') 'copiando da un altro progetto il .meta arriva con il file (impostazioni di import salve)'
+
+    [IO.File]::WriteAllText($metaA, 'MA2')
+    [IO.File]::WriteAllText("$metaA.meta", 'GUID-B')
+    $proc = Start-Tool @('--to', (Q $p1), (Q $metaA))
+    $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
+    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Sostituisci') }
+    [void](Wait-Exit $proc)
+    Check ((Read-File (Join-Path $dest 'meta_a.png')) -eq 'MA2' -and (Read-File (Join-Path $dest 'meta_a.png.meta')) -eq 'GUID-A') 'sostituendo il file, il .meta del progetto resta (riferimenti salvi)'
+
+    $inner = New-File (Join-Path $p1 'Assets\Textures\Env\interno.png') 'I'
+    New-File "$inner.meta" 'GUID-I' | Out-Null
+    [void](Wait-Exit (Start-Tool @('--to', (Q $p1), (Q $inner))))
+    Check ((Exists (Join-Path $dest 'interno.png')) -and -not (Exists (Join-Path $dest 'interno.png.meta'))) 'copiando dentro lo stesso progetto il .meta non si duplica (niente GUID doppi)'
+
+    $metaB = New-File (Join-Path $p3 'Assets\Tex\meta_b.png') 'MB'
+    New-File "$metaB.meta" 'GUID-MB' | Out-Null
+    $mark = Log-Mark
+    $items = Menu @($metaB, "$metaB.meta") 'Gioco'
+    [void](Wait-Idle)
+    Check ((Read-File (Join-Path $dest 'meta_b.png.meta')) -eq 'GUID-MB') 'file e .meta selezionati insieme: arrivano entrambi'
+    Check ((Log-Since $mark) -match 'notifica: 1 copiati') 'il .meta non conta come file inviato'
+
+    $kit = Join-Path $p3 'Assets\Kit'
+    New-File (Join-Path $kit 'k1.png') 'K1' | Out-Null
+    New-File (Join-Path $kit 'k1.png.meta') 'GUID-K1' | Out-Null
+    New-File (Join-Path $kit 'sub\k2.png') 'K2' | Out-Null
+    New-File (Join-Path $kit 'sub\k2.png.meta') 'GUID-K2' | Out-Null
+    New-File (Join-Path $kit 'sub.meta') 'GUID-SUB' | Out-Null
+    New-File "$kit.meta" 'GUID-KIT' | Out-Null
+    $proc = Start-Tool @('--pick', (Q $kit))
+    $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
+    if ($dialog) {
+        Press (Find-Control $dialog '*BUTTON*' 'Sposta invece di copiare (gli originali vengono tolti)')
+        Set-Text (Find-FolderBox $dialog) 'Assets/Kits'
+        Press (Find-Control $dialog '*BUTTON*' 'Invia')
+    }
+    [void](Wait-Exit $proc)
+    $kits = Join-Path $p1 'Assets\Kits'
+    $kitDest = Join-Path $kits 'Kit'
+    Check ((Read-File (Join-Path $kitDest 'k1.png.meta')) -eq 'GUID-K1' -and (Read-File (Join-Path $kitDest 'sub\k2.png.meta')) -eq 'GUID-K2') 'spostando una cartella i .meta dei file la seguono'
+    Check ((Read-File (Join-Path $kitDest 'sub.meta')) -eq 'GUID-SUB' -and (Read-File "$kitDest.meta") -eq 'GUID-KIT') 'anche i .meta delle cartelle la seguono'
+    Check (-not (Exists $kit) -and -not (Exists "$kit.meta")) "nell'origine non restano cartelle vuote ne' .meta orfani"
+
+    Write-Host '--- 11. progetti con lo stesso nome'
+    $u3 = $p3.Replace('\', '/')
+    $json = '{"schema_version":"v1","data":{' +
+        '"' + $u1 + '":{"title":"Gioco","path":"' + $u1 + '","lastModified":1700000000000},' +
+        '"' + $u2 + '":{"title":"Altro","path":"' + $u2 + '","lastModified":1600000000000},' +
+        '"' + $u3 + '":{"title":"Gioco","path":"' + $u3 + '","lastModified":1500000000000}}}'
+    [IO.File]::WriteAllText((Join-Path $hubDir 'projects-v1.json'), $json)
+    [void](Wait-Exit (Start-Tool @('--refresh')))
+    $items = @(Menu @($albedo))
+    Note ('sottomenu: ' + ($items -join ' | '))
+    $fromProgetti = @($items | Where-Object { $_ -like 'Gioco `[Prova`] && Co  (Progetti)*' }).Count
+    $fromAltri = @($items | Where-Object { $_ -like 'Gioco `[Prova`] && Co  (Altri)*' }).Count
+    Check ($fromProgetti -eq 1 -and $fromAltri -eq 1) 'due progetti con lo stesso nome si distinguono dalla cartella che li contiene'
+
+    Write-Host '--- 12. clic sulla notifica'
+    $clickFile = New-File (Join-Path $in 'clic.png') 'C'
+    $proc = Start-Tool @('--to', (Q $p1), (Q $clickFile))
+    $toast = Find-Window $proc.Id 'Invia a Unity - notifica'
+    Check ($null -ne $toast) 'compare la notifica'
+    if ($toast) { Click-Window $toast }
+    [void](Wait-Exit $proc)
+    $window = Find-ExplorerWindow $kits
+    Check ($null -ne $window) 'cliccando la notifica si apre la cartella del progetto'
+    if ($window) {
+        Start-Sleep -Seconds 2
+        $selected = @($window.Document.SelectedItems() | ForEach-Object { $_.Path })
+        Check ($selected -contains (Join-Path $kits 'clic.png')) "con il file appena arrivato gia' selezionato ($($selected -join ', '))"
+        try { $window.Quit() } catch { }
+    }
+
+    Write-Host '--- 13. disinstallazione'
     Copy-Item -LiteralPath $log -Destination $savedLog -ErrorAction SilentlyContinue
     Run-Native { & (Join-Path $src 'uninstall.cmd') /quiet }
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'
