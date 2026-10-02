@@ -1967,6 +1967,7 @@ namespace SendToUnity
 
         void OpenTarget()
         {
+            Log.Write("apro " + open);
             try
             {
                 if (File.Exists(open)) Process.Start("explorer.exe", "/select," + Paths.Quote(open));

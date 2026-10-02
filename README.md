@@ -15,22 +15,32 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
   ![La finestra](docs/finestra.png)
 
 - **Dalla seconda volta** il progetto compare nel menu con la sua cartella: un clic e i file
-  sono dentro, senza finestre. Compare solo una notifica in basso a destra (cliccandola si apre
-  la cartella).
+  sono dentro, senza finestre. Compare solo una notifica in basso a destra; cliccandola si apre
+  la cartella con il file appena arrivato già selezionato. Se la copia è lunga (cartelle grandi,
+  file pesanti) la notifica mostra l'avanzamento.
 
   ![La notifica](docs/notifica.png)
 
 - I progetti usati più di recente stanno in alto. Arrivano da Unity Hub e dai progetti recenti
   di Unity; se ne manca uno: **Scegli progetto e cartella...** > **Sfoglia...**
+  Due progetti con lo stesso nome si distinguono dalla cartella che li contiene.
 - Se il progetto è **aperto in Unity**, a copia finita Unity viene portato in primo piano e
   importa subito i file. Se è chiuso, li importa alla prossima apertura.
 - Se un file **esiste già** puoi sostituirlo o saltarlo. Sostituendo, il file `.meta` resta:
   riferimenti e impostazioni di import in Unity non si rompono. Premendo Invio si sostituisce.
+  Se Unity sta ancora importando il vecchio file, il programma aspetta qualche secondo e riprova.
 
   ![File già presenti](docs/file-presenti.png)
 
 - Funziona con molti file insieme (provato con 40) e con le cartelle, sottocartelle comprese.
+  Copiando una cartella vengono saltati `.git`, `__MACOSX`, `Thumbs.db` e simili.
 - Nella finestra c'è anche **Sposta**, che toglie i file dalla posizione originale.
+- **File `.meta` di Unity**, se i file vengono da un altro progetto Unity:
+  - copiando, il `.meta` arriva insieme al file, quindi le impostazioni di import restano;
+  - spostando, il `.meta` segue sempre il file (e le cartelle), quindi nell'origine non restano
+    `.meta` orfani e, dentro lo stesso progetto, i riferimenti non si rompono;
+  - copiando dentro lo stesso progetto il `.meta` non viene duplicato (Unity ne crea uno nuovo);
+  - un `.meta` che il progetto di destinazione ha già non viene mai sostituito.
 - Da tastiera: tasto menu (o Maiusc+F10), **I**, freccia destra, Invio.
 
 ## Installazione
@@ -59,5 +69,5 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 - `SendToUnity.cs` è tutto il programma. Deve restare compatibile con C# 5, perché lo compila
   il compilatore incluso in Windows.
 - `tests/test-windows.ps1` lo installa e lo prova su una vera macchina Windows (GitHub Actions,
-  a ogni modifica di questa cartella): menu del tasto destro vero, finestre, copie, progetto
-  aperto in un finto Unity, disinstallazione.
+  a ogni modifica di questa cartella): menu del tasto destro vero, finestre, copie, `.meta`,
+  file bloccati, progetto aperto in un finto Unity, disinstallazione.

@@ -201,10 +201,11 @@ function Toast-Text([int]$timeoutMs = 15000) {
     if (-not $toast) { return '<nessuna notifica>' }
     (@(Get-Controls $toast | Where-Object { $_.Class -like '*STATIC*' } | ForEach-Object { $_.Text }) -join ' | ')
 }
+# Clic vero del mouse al centro della prima scritta della finestra
 function Click-Window($window) {
-    $point = [IntPtr]((10 -shl 16) -bor 10)
-    [void][Win]::PostMessage($window.Handle, 0x0201, [IntPtr]1, $point)          # WM_LBUTTONDOWN
-    [void][Win]::PostMessage($window.Handle, 0x0202, [IntPtr]::Zero, $point)     # WM_LBUTTONUP
+    $label = Get-Controls $window | Where-Object { $_.Class -like '*STATIC*' } | Select-Object -First 1
+    $target = if ($label) { $label } else { $window }
+    [Win]::ClickAt($target.Left + [int]($target.Width / 2), $target.Top + [int]($target.Height / 2))
 }
 function Find-ExplorerWindow([string]$folder, [int]$timeoutMs = 15000) {
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -554,7 +555,7 @@ try {
         '"' + $u3 + '":{"title":"Gioco","path":"' + $u3 + '","lastModified":1500000000000}}}'
     [IO.File]::WriteAllText((Join-Path $hubDir 'projects-v1.json'), $json)
     [void](Wait-Exit (Start-Tool @('--refresh')))
-    $items = @(Menu @($albedo))
+    $items = @(Menu @($albedo) | ForEach-Object { $_ })
     Note ('sottomenu: ' + ($items -join ' | '))
     $fromProgetti = @($items | Where-Object { $_ -like 'Gioco `[Prova`] && Co  (Progetti)*' }).Count
     $fromAltri = @($items | Where-Object { $_ -like 'Gioco `[Prova`] && Co  (Altri)*' }).Count
@@ -562,11 +563,13 @@ try {
 
     Write-Host '--- 12. clic sulla notifica'
     $clickFile = New-File (Join-Path $in 'clic.png') 'C'
+    $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p1), (Q $clickFile))
     $toast = Find-Window $proc.Id 'Invia a Unity - notifica'
     Check ($null -ne $toast) 'compare la notifica'
     if ($toast) { Click-Window $toast }
     [void](Wait-Exit $proc)
+    Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'apro ' }) -join ' | '))
     $window = Find-ExplorerWindow $kits
     Check ($null -ne $window) 'cliccando la notifica si apre la cartella del progetto'
     if ($window) {

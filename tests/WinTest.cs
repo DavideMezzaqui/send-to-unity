@@ -32,6 +32,16 @@ public static class Win {
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+
+    // Clic vero del mouse in un punto dello schermo, come farebbe una persona
+    public static void ClickAt(int x, int y) {
+        SetCursorPos(x, y);
+        System.Threading.Thread.Sleep(100);
+        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);   // tasto sinistro giu'
+        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);   // tasto sinistro su
+    }
 
     static Win32Window Describe(IntPtr h) {
         var name = new StringBuilder(256);
