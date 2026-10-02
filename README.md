@@ -16,8 +16,9 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
 
 - **Dalla seconda volta** il progetto compare nel menu con la sua cartella: un clic e i file
   sono dentro, senza finestre. Compare solo una notifica in basso a destra; cliccandola si apre
-  la cartella con il file appena arrivato già selezionato. Se la copia è lunga (cartelle grandi,
-  file pesanti) la notifica mostra l'avanzamento.
+  la cartella con il file appena arrivato già selezionato (finché il mouse è sopra, la notifica
+  non sparisce). Se la copia è lunga (cartelle grandi, file pesanti) la notifica mostra
+  l'avanzamento.
 
   ![La notifica](docs/notifica.png)
 
@@ -35,13 +36,14 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
 - Funziona con molti file insieme (provato con 40) e con le cartelle, sottocartelle comprese.
   Copiando una cartella vengono saltati `.git`, `__MACOSX`, `Thumbs.db` e simili.
 - Nella finestra c'è anche **Sposta**, che toglie i file dalla posizione originale.
-- **File `.meta` di Unity**, se i file vengono da un altro progetto Unity:
+- **File `.meta` di Unity**, quando i file arrivano da un progetto Unity:
   - copiando, il `.meta` arriva insieme al file, quindi le impostazioni di import restano;
   - spostando, il `.meta` segue sempre il file (e le cartelle), quindi nell'origine non restano
     `.meta` orfani e, dentro lo stesso progetto, i riferimenti non si rompono;
   - copiando dentro lo stesso progetto il `.meta` non viene duplicato (Unity ne crea uno nuovo);
   - un `.meta` che il progetto di destinazione ha già non viene mai sostituito.
-- Da tastiera: tasto menu (o Maiusc+F10), **I**, freccia destra, Invio.
+- Da tastiera: tasto menu (o Maiusc+F10), **I**, freccia destra, Invio. Su Windows 11 il tasto
+  menu apre prima il menu ridotto: lì scegli "Mostra altre opzioni".
 
 ## Installazione
 

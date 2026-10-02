@@ -234,6 +234,8 @@ function Menu([string[]]$paths, $click = $null) {
 # ------------------------------------------------------------------ test
 
 try {
+    [Win]::MoveTo(200, 200)   # il mouse lontano dall'angolo delle notifiche (sotto il mouse restano aperte)
+
     Write-Host '--- 1. installazione sopra la vecchia versione'
     $old = $registry.CreateSubKey("$fileMenu\command")
     $old.SetValue('', 'wscript.exe "launcher.vbs" "%1"')
@@ -344,6 +346,21 @@ try {
     Check ($leaders -ge 1 -and $leaders -le 2) 'i file sono stati raccolti da una sola istanza (al massimo due)'
     $toasts = ([regex]::Matches((Log-Since $mark), 'notifica: ')).Count
     Check ($toasts -eq $leaders) "una sola notifica per invio, a copie finite (notifiche: $toasts)"
+
+    # un secondo invio mentre la notifica del primo e' ancora visibile
+    $first = New-File (Join-Path $in 'subito\primo.png') 'P1'
+    $second = New-File (Join-Path $in 'subito\secondo.png') 'P2'
+    $mark = Log-Mark
+    $proc = Start-Tool @('--to', (Q $p1), (Q $first))
+    Check ($null -ne (Find-Window $proc.Id 'Invia a Unity - notifica')) 'notifica del primo invio'
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $proc2 = Start-Tool @('--to', (Q $p1), (Q $second))
+    while ($watch.ElapsedMilliseconds -lt 10000 -and -not (Exists (Join-Path $dest 'secondo.png'))) { Start-Sleep -Milliseconds 50 }
+    $elapsed = $watch.ElapsedMilliseconds
+    Check ($elapsed -lt 2000) "un secondo invio mentre la notifica e' visibile arriva subito ($elapsed ms)"
+    [void](Wait-Exit @($proc, $proc2))
+    $counts = @([regex]::Matches((Log-Since $mark), 'notifica: (\d+) copiati') | ForEach-Object { $_.Groups[1].Value })
+    Check (($counts -join ',') -eq '1,1') "ogni invio ha la sua notifica con il suo conteggio ($($counts -join ','))"
 
     Write-Host '--- 5. file gia presenti'
     [IO.File]::WriteAllText($albedo, 'A2')
@@ -533,6 +550,11 @@ try {
     New-File (Join-Path $kit 'sub\k2.png.meta') 'GUID-K2' | Out-Null
     New-File (Join-Path $kit 'sub.meta') 'GUID-SUB' | Out-Null
     New-File "$kit.meta" 'GUID-KIT' | Out-Null
+    New-File (Join-Path $kit 'sub\cancellato.png.meta') 'GUID-ORFANO' | Out-Null
+    New-File (Join-Path $kit 'Thumbs.db') 'cache' | Out-Null
+    New-File (Join-Path $kit 'Thumbs.db.meta') 'GUID-THUMBS' | Out-Null
+    [IO.File]::SetAttributes((Join-Path $kit 'Thumbs.db'), 'ReadOnly, Hidden, System')
+    [IO.File]::SetAttributes((Join-Path $kit 'k1.png'), 'ReadOnly')
     $proc = Start-Tool @('--pick', (Q $kit))
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
@@ -545,6 +567,9 @@ try {
     $kitDest = Join-Path $kits 'Kit'
     Check ((Read-File (Join-Path $kitDest 'k1.png.meta')) -eq 'GUID-K1' -and (Read-File (Join-Path $kitDest 'sub\k2.png.meta')) -eq 'GUID-K2') 'spostando una cartella i .meta dei file la seguono'
     Check ((Read-File (Join-Path $kitDest 'sub.meta')) -eq 'GUID-SUB' -and (Read-File "$kitDest.meta") -eq 'GUID-KIT') 'anche i .meta delle cartelle la seguono'
+    Check ((Read-File (Join-Path $kitDest 'k1.png')) -eq 'K1') 'anche un file in sola lettura viene spostato'
+    Check ((Read-File (Join-Path $kitDest 'sub\cancellato.png.meta')) -eq 'GUID-ORFANO') 'un .meta rimasto senza file segue la sua cartella'
+    Check (-not (Exists (Join-Path $kitDest 'Thumbs.db')) -and -not (Exists (Join-Path $kitDest 'Thumbs.db.meta'))) 'Thumbs.db e il suo .meta non finiscono nel progetto'
     Check (-not (Exists $kit) -and -not (Exists "$kit.meta")) "nell'origine non restano cartelle vuote ne' .meta orfani"
 
     Write-Host '--- 11. progetti con lo stesso nome'
@@ -567,19 +592,46 @@ try {
     $proc = Start-Tool @('--to', (Q $p1), (Q $clickFile))
     $toast = Find-Window $proc.Id 'Invia a Unity - notifica'
     Check ($null -ne $toast) 'compare la notifica'
-    if ($toast) { Click-Window $toast }
+    if ($toast) {
+        [Win]::MoveTo($toast.Left + 20, $toast.Top + 10)
+        Start-Sleep -Seconds 5
+        Check ($null -ne (Find-Window $proc.Id 'Invia a Unity - notifica' '*' 500)) 'con il mouse sopra, la notifica non sparisce'
+        Click-Window $toast
+        [Win]::MoveTo(200, 200)
+    }
     [void](Wait-Exit $proc)
-    Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'apro ' }) -join ' | '))
+    Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'apro |non aperta' }) -join ' | '))
     $window = Find-ExplorerWindow $kits
     Check ($null -ne $window) 'cliccando la notifica si apre la cartella del progetto'
     if ($window) {
-        Start-Sleep -Seconds 2
-        $selected = @($window.Document.SelectedItems() | ForEach-Object { $_.Path })
-        Check ($selected -contains (Join-Path $kits 'clic.png')) "con il file appena arrivato gia' selezionato ($($selected -join ', '))"
+        # la vista si completa dopo l'apertura: rileggo la finestra finche' la selezione non compare
+        $wanted = Join-Path $kits 'clic.png'
+        $selected = @()
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        while ($watch.ElapsedMilliseconds -lt 10000) {
+            $current = Find-ExplorerWindow $kits 1000
+            if ($current) {
+                $window = $current
+                try { $selected = @($current.Document.SelectedItems() | ForEach-Object { $_.Path }) } catch { }
+            }
+            if ($selected -contains $wanted) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not ($selected -contains $wanted)) {
+            try { Note ('elemento con il focus: ' + $window.Document.FocusedItem.Path) } catch { }
+            Shot-Screen '10-cartella-aperta'
+        }
+        Check ($selected -contains $wanted) "con il file appena arrivato gia' selezionato ($($selected -join ', '))"
         try { $window.Quit() } catch { }
     }
 
-    Write-Host '--- 13. disinstallazione'
+    Write-Host '--- 13. aggiornamento: reinstallare non perde le impostazioni'
+    Run-Native { & (Join-Path $src 'install.cmd') /quiet }
+    Check ($LASTEXITCODE -eq 0) 'reinstallazione senza errori'
+    $label = [string]$registry.OpenSubKey("$fileMenu\shell\00").GetValue('MUIVerb')
+    Check ($label -like '*Assets/Kits') "dopo la reinstallazione il menu ricorda ancora la cartella ($label)"
+
+    Write-Host '--- 14. disinstallazione'
     Copy-Item -LiteralPath $log -Destination $savedLog -ErrorAction SilentlyContinue
     Run-Native { & (Join-Path $src 'uninstall.cmd') /quiet }
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'

@@ -90,7 +90,9 @@ namespace SendToUnity
             var files = list.Where(f => f.Trim().Length > 0).ToList();
             if (files.Count == 0)
             {
-                Ui.Info("Seleziona dei file in Esplora risorse, poi tasto destro > Invia a Unity.");
+                Ui.Info("Invia a Unity si usa dal tasto destro: seleziona file o cartelle in Esplora risorse, " +
+                        "poi tasto destro > Invia a Unity.\n\nSu Windows 11 la voce è sotto \"Mostra altre opzioni\" " +
+                        "(oppure Maiusc + tasto destro).");
                 return 0;
             }
 
@@ -276,6 +278,11 @@ namespace SendToUnity
             }
         }
 
+        public bool HasPending
+        {
+            get { lock (sync) return pending.Count > 0; }
+        }
+
         // Smette di confermare: chi arriva dopo aspetta la fine di questa istanza e riparte da sé
         public List<string> Close()
         {
@@ -334,28 +341,36 @@ namespace SendToUnity
         // Progetto e cartella già noti: nessuna finestra, solo la notifica finale
         static int Quick(string project, string folder, Collector collector)
         {
-            var job = new CopyJob(project, folder, false);
+            int status = 0;
             var files = collector.Take();
             while (files.Count > 0)
             {
-                if (!job.Run(files))
+                // un giro per ogni invio, con il suo conteggio e la sua domanda sui file già presenti
+                var job = new CopyJob(project, folder, false);
+                do
                 {
-                    collector.Close();
-                    return 0;
+                    if (!job.Run(files))
+                    {
+                        collector.Close();
+                        return status;
+                    }
+                    // con molti file Explorer avvia le istanze a ondate: si copia finché ne arrivano
+                    collector.WaitQuiet(500, 3000);
+                    files = collector.Take();
                 }
-                // con molti file Explorer avvia le istanze a ondate: si copia finché ne arrivano
-                collector.WaitQuiet(500, 3000);
-                files = collector.Take();
-                if (files.Count > 0) continue;
+                while (files.Count > 0);
 
                 // tutto copiato: ora Unity in primo piano, così importa tutto in una volta
                 Projects.FocusEditor(project);
                 Log.Write("notifica: " + job.Result.Copied + " copiati, " + job.Result.Skipped + " saltati");
-                Ui.ShowResult(job.Result);
-                files = collector.Close();   // eventuali file arrivati mentre la notifica era visibile
+                if (job.Result.Errors.Count > 0) status = 1;
+                // un nuovo invio mentre la notifica è visibile la chiude e viene copiato subito
+                Ui.ShowResult(job.Result, () => collector.HasPending);
+                files = collector.Take();
+                if (files.Count == 0) files = collector.Close();
             }
             Remember(project, folder);
-            return job.Result.Errors.Count > 0 ? 1 : 0;
+            return status;
         }
 
         static int WithDialog(string preselect, Collector collector, Settings settings)
@@ -377,7 +392,7 @@ namespace SendToUnity
                 if (!job.Run(files)) return 0;
                 Remember(dialog.Project.Path, dialog.Folder);
                 Projects.FocusEditor(dialog.Project.Path);
-                Ui.ShowResult(job.Result);
+                Ui.ShowResult(job.Result, null);
                 return job.Result.Errors.Count > 0 ? 1 : 0;
             }
         }
@@ -461,7 +476,14 @@ namespace SendToUnity
                 overwrite = answer == DialogResult.Yes;
             }
 
-            Directory.CreateDirectory(destination);
+            try { Directory.CreateDirectory(destination); }
+            catch (Exception ex)
+            {
+                // per esempio "Accesso controllato alle cartelle": il messaggio finale spiega cosa fare
+                AddError(Result.Folder, ex);
+                Log.Write("cartella " + destination + " non creata: " + ex.Message);
+                return true;
+            }
             foreach (string folder in folders)
             {
                 try { Directory.CreateDirectory(folder); }
@@ -592,8 +614,12 @@ namespace SendToUnity
                 Step owner;
                 if (!assets.TryGetValue(ownerPath, out owner))
                 {
-                    // .meta di una cartella: spostando ci pensa Cleanup, che sa se la cartella è stata svuotata
-                    if (move || !Directory.Exists(ownerPath)) continue;   // altrimenti è un .meta orfano: resta dov'è
+                    if (Directory.Exists(ownerPath))
+                    {
+                        // .meta di una cartella: spostando ci pensa Cleanup, che sa se la cartella è stata svuotata
+                        if (move) continue;
+                    }
+                    else if (!move) continue;   // .meta orfano: copiando resta dov'è, spostando segue la sua cartella
                     owner = null;
                 }
                 steps.Add(new Step { Source = meta.Key, Target = meta.Value, IsMeta = true, Owner = owner });
@@ -629,6 +655,7 @@ namespace SendToUnity
 
         static bool IsJunk(string name)
         {
+            if (IsMeta(name)) name = name.Substring(0, name.Length - ".meta".Length);   // anche il loro .meta
             return name.StartsWith("._") || JunkFiles.Contains(name, StringComparer.OrdinalIgnoreCase);
         }
 
@@ -677,7 +704,7 @@ namespace SendToUnity
             {
                 // prima la copia e poi via l'originale: se qualcosa va storto non si perde niente
                 File.Copy(step.Source, step.Target, true);
-                File.Delete(step.Source);
+                Delete(step.Source);
             }
             else
             {
@@ -692,7 +719,7 @@ namespace SendToUnity
         {
             if (File.Exists(step.Target))
             {
-                if (move) Retry(() => File.Delete(step.Source));   // il file è stato spostato: il vecchio .meta non serve più
+                if (move) Retry(() => Delete(step.Source));   // il file è stato spostato: il vecchio .meta non serve più
                 return;
             }
             Directory.CreateDirectory(Path.GetDirectoryName(step.Target));
@@ -731,6 +758,13 @@ namespace SendToUnity
                 File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
         }
 
+        // spostando, l'originale va via anche se è in sola lettura (come fa Esplora risorse)
+        static void Delete(string file)
+        {
+            ClearReadOnly(file);
+            File.Delete(file);
+        }
+
         // Dopo uno spostamento toglie dall'origine le cartelle rimaste vuote (o con soli file di sistema),
         // dal basso verso l'alto, e porta il loro .meta accanto alla cartella di destinazione
         void Cleanup(string folder)
@@ -740,7 +774,7 @@ namespace SendToUnity
                 foreach (string sub in Directory.GetDirectories(folder)) Cleanup(sub);
                 var left = Directory.GetFileSystemEntries(folder);
                 if (!left.All(f => File.Exists(f) && IsJunk(Path.GetFileName(f)))) return;   // ci sono file saltati
-                foreach (string f in left) File.Delete(f);
+                foreach (string f in left) Delete(f);
                 Directory.Delete(folder);
 
                 string meta = folder + ".meta";
@@ -805,7 +839,7 @@ namespace SendToUnity
         {
             try
             {
-                using (var toast = new Toast(Text, where, null, null, this)) Application.Run(toast);
+                using (var toast = new Toast(Text, where, null, null, this, null)) Application.Run(toast);
             }
             catch (Exception ex)
             {
@@ -1440,7 +1474,8 @@ namespace SendToUnity
             using (var dialog = new ConflictDialog(targets, result)) return dialog.ShowDialog();
         }
 
-        public static void ShowResult(Result result)
+        // interrupt: se diventa vero la notifica si chiude prima (sono arrivati altri file da copiare)
+        public static void ShowResult(Result result, Func<bool> interrupt)
         {
             if (result.Errors.Count > 0)
             {
@@ -1456,7 +1491,7 @@ namespace SendToUnity
             // cliccando la notifica si apre la cartella con il primo file arrivato già selezionato
             string open = result.FirstTarget ?? (Directory.Exists(result.Destination) ? result.Destination : null);
             string title = (result.Copied > 0 ? "\u2713  " : "") + Summary(result);
-            using (var toast = new Toast(title, Where(result), open != null ? "Clic per aprire la cartella" : null, open, null))
+            using (var toast = new Toast(title, Where(result), open != null ? "Clic per aprire la cartella" : null, open, null, interrupt))
                 Application.Run(toast);
         }
 
@@ -1851,20 +1886,25 @@ namespace SendToUnity
         }
     }
 
-    // Notifica in basso a destra che non ruba il focus a Unity: quella finale sparisce da sola,
-    // quella di avanzamento si aggiorna finché la copia non è finita
+    // Notifica in basso a destra che non ruba il focus a Unity: quella finale sparisce da sola
+    // (non mentre il mouse ci è sopra), quella di avanzamento si aggiorna finché la copia non è finita
     class Toast : Form
     {
-        readonly string open;         // file o cartella da aprire con un clic (null = niente)
-        readonly Progress progress;   // non null: notifica di avanzamento
+        const int VisibleMs = 3500;
+
+        readonly string open;           // file o cartella da aprire con un clic (null = niente)
+        readonly Progress progress;     // non null: notifica di avanzamento
+        readonly Func<bool> interrupt;  // vero = deve lasciare il posto a un nuovo invio
         readonly Label titleLabel;
-        readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 100 };
+        DateTime closeAt;
         bool placed;
 
-        public Toast(string title, string detail, string hint, string open, Progress progress)
+        public Toast(string title, string detail, string hint, string open, Progress progress, Func<bool> interrupt)
         {
             this.open = open;
             this.progress = progress;
+            this.interrupt = interrupt;
             Name = "toast";
             Text = App.Name + (progress == null ? " - notifica" : " - avanzamento");
             FormBorderStyle = FormBorderStyle.None;
@@ -1899,19 +1939,27 @@ namespace SendToUnity
                 foreach (Control label in panel.Controls) label.Click += delegate { OpenTarget(); };
             }
 
-            if (progress == null)
+            timer.Tick += delegate { Tick(); };
+        }
+
+        void Tick()
+        {
+            if (progress != null)
             {
-                timer.Interval = 2600;
-                timer.Tick += delegate { Close(); };
+                if (progress.Finished) Close();
+                else titleLabel.Text = progress.Text;
             }
-            else
+            else if (interrupt != null && interrupt())
             {
-                timer.Interval = 150;
-                timer.Tick += delegate
-                {
-                    if (progress.Finished) Close();
-                    else titleLabel.Text = progress.Text;
-                };
+                Close();
+            }
+            else if (Bounds.Contains(Control.MousePosition))
+            {
+                closeAt = DateTime.UtcNow.AddMilliseconds(1500);   // magari la si sta per cliccare
+            }
+            else if (DateTime.UtcNow >= closeAt)
+            {
+                Close();
             }
         }
 
@@ -1949,6 +1997,7 @@ namespace SendToUnity
             base.OnLoad(e);
             placed = true;
             Place();
+            closeAt = DateTime.UtcNow.AddMilliseconds(VisibleMs);
             timer.Start();
         }
 
@@ -1970,10 +2019,15 @@ namespace SendToUnity
             Log.Write("apro " + open);
             try
             {
-                if (File.Exists(open)) Process.Start("explorer.exe", "/select," + Paths.Quote(open));
-                else Process.Start("explorer.exe", Paths.Quote(open));
+                if (!File.Exists(open))
+                    Process.Start("explorer.exe", Paths.Quote(open));
+                else if (!Native.ShowInExplorer(open))   // file selezionato, nella finestra già aperta se c'è
+                    Process.Start("explorer.exe", "/select," + Paths.Quote(open));
             }
-            catch (Exception) { }
+            catch (Exception ex)
+            {
+                Log.Write("cartella non aperta: " + ex.Message);
+            }
             Close();
         }
 
@@ -2084,6 +2138,27 @@ namespace SendToUnity
         }
 
         [DllImport("user32.dll")] static extern bool PeekMessage(out NativeMessage message, IntPtr window, uint min, uint max, uint remove);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr pidl, uint attributesIn, out uint attributesOut);
+        [DllImport("shell32.dll")] static extern int SHOpenFolderAndSelectItems(IntPtr pidl, uint count, IntPtr[] items, uint flags);
+        [DllImport("ole32.dll")] static extern void CoTaskMemFree(IntPtr memory);
+
+        // Apre la cartella del file con il file selezionato; se la cartella è già aperta usa quella finestra
+        public static bool ShowInExplorer(string file)
+        {
+            IntPtr pidl;
+            uint ignored;
+            if (SHParseDisplayName(file, IntPtr.Zero, out pidl, 0, out ignored) != 0 || pidl == IntPtr.Zero) return false;
+            try
+            {
+                return SHOpenFolderAndSelectItems(pidl, 0, null, 0) == 0;
+            }
+            finally
+            {
+                CoTaskMemFree(pidl);
+            }
+        }
 
         // Guardare la coda dei messaggi (senza toglierli) fa risultare il processo "pronto all'input"
         public static void SignalIdle()
