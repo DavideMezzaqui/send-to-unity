@@ -71,7 +71,7 @@ namespace SendToUnity
                     Installer.Uninstall();
                     return 0;
                 case "--refresh":
-                    ShellMenu.Refresh(Settings.Load());
+                    ShellMenu.Refresh();
                     return 0;
             }
 
@@ -401,7 +401,8 @@ namespace SendToUnity
         {
             try
             {
-                ShellMenu.Refresh(Settings.Update(s => s.Remember(project, folder)));
+                Settings.Update(s => s.Remember(project, folder));
+                ShellMenu.Refresh();
             }
             catch (Exception ex)
             {
@@ -1239,10 +1240,19 @@ namespace SendToUnity
 
         public static Settings Load()
         {
-            try
+            Settings settings;
+            return Read(out settings) ? settings : new Settings();
+        }
+
+        // false se il file c'è ma resta occupato: salvando ora si perderebbero le preferenze
+        static bool Read(out Settings settings)
+        {
+            settings = new Settings();
+            for (int attempt = 1; ; attempt++)
             {
-                if (File.Exists(FilePath))
+                try
                 {
+                    if (!File.Exists(FilePath)) return true;
                     var loaded = new JavaScriptSerializer().Deserialize<Settings>(File.ReadAllText(FilePath, Encoding.UTF8));
                     if (loaded != null)
                     {
@@ -1250,15 +1260,26 @@ namespace SendToUnity
                         if (loaded.Projects == null) loaded.Projects = new List<ProjectPrefs>();
                         loaded.ExtraProjects.RemoveAll(string.IsNullOrEmpty);
                         loaded.Projects.RemoveAll(p => p == null || string.IsNullOrEmpty(p.Path));
-                        return loaded;
+                        settings = loaded;
                     }
+                    return true;
+                }
+                catch (IOException ex)
+                {
+                    // di solito un altro invio lo sta salvando proprio ora: si riprova un attimo dopo
+                    if (attempt >= 20)
+                    {
+                        Log.Write("impostazioni illeggibili: " + ex.Message);
+                        return false;
+                    }
+                    Thread.Sleep(25);
+                }
+                catch (Exception ex)
+                {
+                    Log.Write("impostazioni rovinate, riparto da zero: " + ex.Message);
+                    return true;
                 }
             }
-            catch (Exception ex)
-            {
-                Log.Write("impostazioni illeggibili, riparto da zero: " + ex.Message);
-            }
-            return new Settings();
         }
 
         // Rilegge, modifica e salva sotto un mutex: due invii contemporanei non si cancellano a vicenda
@@ -1271,7 +1292,8 @@ namespace SendToUnity
                 catch (AbandonedMutexException) { owned = true; }
                 try
                 {
-                    var settings = Load();
+                    Settings settings;
+                    if (!Read(out settings)) throw new IOException("le impostazioni sono bloccate da un altro programma");
                     change(settings);
                     Directory.CreateDirectory(App.Dir);
                     string temp = FilePath + ".tmp";
@@ -1318,8 +1340,28 @@ namespace SendToUnity
             return File.Exists(hub) ? hub : null;
         }
 
-        // Riscrive il sottomenu: un progetto per riga (i più usati in alto) + "Scegli progetto e cartella..."
-        public static void Refresh(Settings settings)
+        // Riscrive il sottomenu con le impostazioni salvate. Due invii che finiscono insieme non lo
+        // riscrivono nello stesso momento, e chi arriva dopo rilegge le impostazioni più nuove.
+        public static void Refresh()
+        {
+            using (var mutex = new Mutex(false, @"Local\SendToUnity_menu"))
+            {
+                bool owned;
+                try { owned = mutex.WaitOne(5000); }
+                catch (AbandonedMutexException) { owned = true; }
+                try
+                {
+                    Write(Settings.Load());
+                }
+                finally
+                {
+                    if (owned) mutex.ReleaseMutex();
+                }
+            }
+        }
+
+        // Un progetto per riga (i più usati in alto) + "Scegli progetto e cartella..."
+        static void Write(Settings settings)
         {
             var projects = Projects.Known(settings, false).Take(MaxProjects).ToList();
             string exe = Paths.Quote(App.ExePath);
@@ -1350,7 +1392,7 @@ namespace SendToUnity
 
         public static void TryRefresh()
         {
-            try { Refresh(Settings.Load()); }
+            try { Refresh(); }
             catch (Exception ex) { Log.Write("menu non aggiornato: " + ex.Message); }
         }
 
@@ -1393,7 +1435,7 @@ namespace SendToUnity
             try { Directory.Delete(Path.Combine(Path.GetTempPath(), "SendToUnity-queue"), true); }
             catch (Exception) { }
 
-            ShellMenu.Refresh(Settings.Load());
+            ShellMenu.Refresh();
             // "Invia a" passa tutti i file in una volta: serve quando se ne selezionano più di 15
             LinkFile.Create(SendToLink, App.ExePath, "--pick", ShellMenu.HubExe());
             Log.Write("installato: " + App.ExePath);
@@ -1898,6 +1940,8 @@ namespace SendToUnity
         readonly Label titleLabel;
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 100 };
         DateTime closeAt;
+        Point mouseAtStart;   // se compare proprio sotto il mouse fermo, sparisce lo stesso
+        bool mouseMoved;
         bool placed;
 
         public Toast(string title, string detail, string hint, string open, Progress progress, Func<bool> interrupt)
@@ -1953,13 +1997,13 @@ namespace SendToUnity
             {
                 Close();
             }
-            else if (Bounds.Contains(Control.MousePosition))
+            else
             {
-                closeAt = DateTime.UtcNow.AddMilliseconds(1500);   // magari la si sta per cliccare
-            }
-            else if (DateTime.UtcNow >= closeAt)
-            {
-                Close();
+                // sotto il mouse non sparisce: magari la si sta per cliccare
+                Point mouse = Control.MousePosition;
+                if (mouse != mouseAtStart) mouseMoved = true;
+                if (mouseMoved && Bounds.Contains(mouse)) closeAt = DateTime.UtcNow.AddMilliseconds(1500);
+                else if (DateTime.UtcNow >= closeAt) Close();
             }
         }
 
@@ -1998,6 +2042,7 @@ namespace SendToUnity
             placed = true;
             Place();
             closeAt = DateTime.UtcNow.AddMilliseconds(VisibleMs);
+            mouseAtStart = Control.MousePosition;
             timer.Start();
         }
 
@@ -2017,12 +2062,20 @@ namespace SendToUnity
         void OpenTarget()
         {
             Log.Write("apro " + open);
+            Hide();
             try
             {
                 if (!File.Exists(open))
+                {
                     Process.Start("explorer.exe", Paths.Quote(open));
-                else if (!Native.ShowInExplorer(open))   // file selezionato, nella finestra già aperta se c'è
-                    Process.Start("explorer.exe", "/select," + Paths.Quote(open));
+                }
+                else
+                {
+                    // file selezionato, nella finestra già aperta se c'è
+                    if (!Native.ShowInExplorer(open)) Process.Start("explorer.exe", "/select," + Paths.Quote(open));
+                    // alcune versioni di Windows aprono la cartella senza selezionare il file: ci si pensa da qui
+                    if (!ExplorerWindows.Select(open, 5000)) Log.Write("file non selezionato in Esplora risorse");
+                }
             }
             catch (Exception ex)
             {
@@ -2187,6 +2240,93 @@ namespace SendToUnity
             {
                 AttachThreadInput(current, foreground, false);
             }
+        }
+    }
+
+    // Le finestre di Esplora risorse viste dall'automazione di Windows (Shell.Application), come da uno script
+    static class ExplorerWindows
+    {
+        // Seleziona il file nelle finestre aperte sulla sua cartella, aspettando che compaiano,
+        // finché la selezione resta stabile (la vista appena aperta a volte la perde)
+        public static bool Select(string file, int timeoutMs)
+        {
+            bool done = false;
+            var thread = new Thread(() =>
+            {
+                try { done = SelectLoop(file, timeoutMs); }
+                catch (Exception ex) { Log.Write("selezione in Esplora risorse: " + ex.Message); }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.IsBackground = true;   // se Esplora risorse non risponde il programma si chiude lo stesso
+            thread.Start();
+            thread.Join(timeoutMs + 2000);
+            return done;
+        }
+
+        static bool SelectLoop(string file, int timeoutMs)
+        {
+            string folder = Path.GetDirectoryName(file);
+            object shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+            var watch = Stopwatch.StartNew();
+            long stableSince = -1;
+            while (watch.ElapsedMilliseconds < timeoutMs)
+            {
+                int found = 0;
+                int selected = 0;
+                object windows = Call(shell, "Windows");
+                int count = (int)Get(windows, "Count");
+                for (int i = 0; i < count; i++)
+                {
+                    try
+                    {
+                        object view = Get(Call(windows, "Item", i), "Document");
+                        object shown = Get(view, "Folder");
+                        if (!Paths.Same((string)Get(Get(shown, "Self"), "Path"), folder)) continue;
+                        found++;
+                        if (IsSelected(view, file))
+                        {
+                            selected++;
+                            continue;
+                        }
+                        object item = Call(shown, "ParseName", Path.GetFileName(file));
+                        if (item != null) Call(view, "SelectItem", item, 1 | 4 | 8 | 16);   // solo lui, visibile, con il focus
+                    }
+                    catch (Exception) { }   // finestre che non mostrano cartelle o che si stanno chiudendo
+                }
+
+                if (found > 0 && selected == found)
+                {
+                    if (stableSince < 0) stableSince = watch.ElapsedMilliseconds;
+                    else if (watch.ElapsedMilliseconds - stableSince >= 1000) return true;
+                }
+                else
+                {
+                    stableSince = -1;
+                }
+                Thread.Sleep(200);
+            }
+            return stableSince >= 0;
+        }
+
+        static bool IsSelected(object view, string file)
+        {
+            object items = Call(view, "SelectedItems");
+            int count = (int)Get(items, "Count");
+            for (int i = 0; i < count; i++)
+            {
+                if (Paths.Same((string)Get(Call(items, "Item", i), "Path"), file)) return true;
+            }
+            return false;
+        }
+
+        static object Get(object target, string name)
+        {
+            return target.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null);
+        }
+
+        static object Call(object target, string name, params object[] args)
+        {
+            return target.GetType().InvokeMember(name, BindingFlags.InvokeMethod, null, target, args);
         }
     }
 

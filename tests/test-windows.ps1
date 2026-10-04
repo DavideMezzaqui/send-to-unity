@@ -430,6 +430,22 @@ try {
     Check (Exists (Join-Path $flipDest 'frame_03.png')) 'al secondo invio il file nuovo si aggiunge'
     Check (-not (Exists (Join-Path $flipDest 'Flipbook'))) 'nessuna cartella annidata (Flipbook dentro Flipbook)'
 
+    # file e cartelle selezionati insieme, in tutti e due gli ordini
+    $looseA = New-File (Join-Path $in 'misto\sciolto_a.png') 'SA'
+    $looseB = New-File (Join-Path $in 'misto\sciolto_b.png') 'SB'
+    $packA = Join-Path $in 'misto\Pacchetto_A'
+    $packB = Join-Path $in 'misto\Pacchetto_B'
+    New-File (Join-Path $packA 'dentro_a.png') 'DA' | Out-Null
+    New-File (Join-Path $packB 'dentro_b.png') 'DB' | Out-Null
+    $items = Menu @($looseA, $packA) 'Gioco'
+    Check ([ExplorerMenu]::Invoked) 'prima un file e poi una cartella: la voce compare'
+    [void](Wait-Idle)
+    $items = Menu @($packB, $looseB) 'Gioco'
+    Check ([ExplorerMenu]::Invoked) 'prima una cartella e poi un file: la voce compare'
+    [void](Wait-Idle)
+    $arrived = @('sciolto_a.png', 'Pacchetto_A\dentro_a.png', 'sciolto_b.png', 'Pacchetto_B\dentro_b.png' | Where-Object { Exists (Join-Path $dest $_) })
+    Check ($arrived.Count -eq 4) "file e cartelle insieme: arriva tutto ($($arrived -join ', '))"
+
     Write-Host '--- 7. progetto aperto in Unity'
     $fakeDir = Join-Path $work 'fake'
     [void][IO.Directory]::CreateDirectory($fakeDir)
