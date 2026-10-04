@@ -466,6 +466,13 @@ try {
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '5-finestra-unity-aperto'
+        $combo = Get-Controls $dialog | Where-Object { $_.Class -like '*COMBOBOX*' } | Sort-Object Top | Select-Object -First 1
+        Check ($combo.Text -eq (Split-Path $p2 -Leaf)) "la casella del progetto contiene il nome ($($combo.Text))"
+        [void][Win]::SendMessage($combo.Handle, 0x014F, [IntPtr]1, $null)   # CB_SHOWDROPDOWN
+        Start-Sleep -Milliseconds 600
+        Shot-Screen '11-elenco-progetti'
+        [void][Win]::SendMessage($combo.Handle, 0x014F, [IntPtr]::Zero, $null)
+        Start-Sleep -Milliseconds 300
         Set-Text (Find-FolderBox $dialog) 'Assets/VFX'
         Press (Find-Control $dialog '*BUTTON*' 'Invia')
     }

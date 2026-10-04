@@ -1623,6 +1623,9 @@ namespace SendToUnity
             projectCombo.DropDownStyle = ComboBoxStyle.DropDownList;
             projectCombo.Width = width;
             projectCombo.Margin = new Padding(0, 0, Ui.S(6), 0);
+            projectCombo.DrawMode = DrawMode.OwnerDrawFixed;   // pallino verde accanto ai progetti aperti
+            projectCombo.ItemHeight = Font.Height + Ui.S(8);
+            projectCombo.DrawItem += DrawProject;
             projectCombo.Items.AddRange(projects.Cast<object>().ToArray());
             browse = new Button { Name = "browseButton", Text = "Sfoglia...", AutoSize = true, Margin = Padding.Empty };
             AddRow(grid, projectCombo, browse);
@@ -1695,12 +1698,50 @@ namespace SendToUnity
             UpdateFilesLabel();
         }
 
+        static readonly Color OpenGreen = Color.FromArgb(22, 163, 74);
+
+        // Progetto nell'elenco: pallino verde + nome + "aperto in Unity" in grigio se Unity lo ha aperto.
+        // Lo spazio del pallino c'è sempre, così i nomi restano allineati.
+        static void DrawProject(object sender, DrawItemEventArgs e)
+        {
+            e.DrawBackground();
+            if (e.Index < 0) return;
+            var combo = (ComboBox)sender;
+            object item = combo.Items[e.Index];
+            var project = item as ProjectInfo;
+            bool selected = (e.State & DrawItemState.Selected) != 0 && (e.State & DrawItemState.ComboBoxEdit) == 0;
+            Color text = selected ? SystemColors.HighlightText : SystemColors.ControlText;
+            Color soft = selected ? SystemColors.HighlightText : SystemColors.GrayText;
+            var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
+
+            int dot = Ui.S(8);
+            int x = e.Bounds.Left + Ui.S(6);
+            if (project != null && project.Open)
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var brush = new SolidBrush(OpenGreen))
+                    e.Graphics.FillEllipse(brush, x, e.Bounds.Top + (e.Bounds.Height - dot) / 2, dot, dot);
+            }
+            x += dot + Ui.S(8);
+
+            string name = project != null ? project.DisplayName : item.ToString();
+            var area = new Rectangle(x, e.Bounds.Top, Math.Max(0, e.Bounds.Right - x), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, name, combo.Font, area, text, flags);
+            if (project != null && project.Open)
+            {
+                int used = TextRenderer.MeasureText(e.Graphics, name, combo.Font, area.Size, flags).Width;
+                var rest = new Rectangle(area.Left + used + Ui.S(6), area.Top, Math.Max(0, area.Width - used - Ui.S(6)), area.Height);
+                TextRenderer.DrawText(e.Graphics, "aperto in Unity", combo.Font, rest, soft, flags);
+            }
+            e.DrawFocusRectangle();
+        }
+
         // L'elenco che si apre è largo quanto la voce più lunga (entro metà schermo)
         static void FitDropDown(ComboBox combo)
         {
             int widest = 0;
             var longest = combo.Items.Cast<object>().Select(i => i.ToString()).OrderByDescending(t => t.Length).Take(30);
-            foreach (string text in longest) widest = Math.Max(widest, TextRenderer.MeasureText(text, combo.Font).Width);
+            foreach (string text in longest) widest = Math.Max(widest, TextRenderer.MeasureText(text, combo.Font).Width + Ui.S(22));
             int max = Screen.FromControl(combo).WorkingArea.Width / 2;
             combo.DropDownWidth = Math.Max(combo.Width, Math.Min(max, widest + SystemInformation.VerticalScrollBarWidth + Ui.S(12)));
         }
@@ -1932,6 +1973,40 @@ namespace SendToUnity
         }
     }
 
+    // Colori delle notifiche: gli stessi dei menu di Windows, chiari o scuri come il tema delle app
+    static class Look
+    {
+        public static readonly bool Dark = ReadDark();
+        public static readonly Color Background = Dark ? Color.FromArgb(44, 44, 44) : Color.FromArgb(249, 249, 249);
+        public static readonly Color Border = Dark ? Color.FromArgb(70, 70, 70) : Color.FromArgb(222, 222, 222);
+        public static readonly Color Text = Dark ? Color.White : Color.FromArgb(26, 26, 26);
+        public static readonly Color Secondary = Dark ? Color.FromArgb(200, 200, 200) : Color.FromArgb(96, 96, 96);
+        public static readonly Color Link = Dark ? Color.FromArgb(96, 205, 255) : Color.FromArgb(0, 95, 184);
+
+        static bool ReadDark()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    object value = key == null ? null : key.GetValue("AppsUseLightTheme");
+                    return value is int && (int)value == 0;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // Titolo in Segoe UI Semibold (quello dei titoli di Windows), se c'è
+        public static Font TitleFont(Font font)
+        {
+            try { return new Font(new FontFamily("Segoe UI Semibold"), font.SizeInPoints + 1.5f, FontStyle.Regular); }
+            catch (ArgumentException) { return new Font(font.FontFamily, font.SizeInPoints + 1.5f, FontStyle.Bold); }
+        }
+    }
+
     // Notifica in basso a destra che non ruba il focus a Unity: quella finale sparisce da sola
     // (non mentre il mouse ci è sopra), quella di avanzamento si aggiorna finché la copia non è finita
     class Toast : Form
@@ -1961,7 +2036,7 @@ namespace SendToUnity
             TopMost = true;
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            BackColor = Color.FromArgb(40, 40, 40);
+            BackColor = Look.Background;
             Font = SystemFonts.MessageBoxFont;
 
             var panel = new FlowLayoutPanel
@@ -1973,10 +2048,10 @@ namespace SendToUnity
                 Margin = Padding.Empty,
                 Padding = new Padding(Ui.S(16), Ui.S(12), Ui.S(22), Ui.S(12))
             };
-            titleLabel = Line(title, Color.White, new Font(Font.FontFamily, Font.SizeInPoints + 1.5f, FontStyle.Bold), 0);
+            titleLabel = Line(title, Look.Text, Look.TitleFont(Font), 0);
             panel.Controls.Add(titleLabel);
-            panel.Controls.Add(Line(detail, Color.FromArgb(220, 220, 220), Font, Ui.S(4)));
-            if (hint != null) panel.Controls.Add(Line(hint, Color.FromArgb(150, 150, 150), Font, Ui.S(2)));
+            panel.Controls.Add(Line(detail, Look.Secondary, Font, Ui.S(4)));
+            if (hint != null) panel.Controls.Add(Line(hint, Look.Link, Font, Ui.S(6)));
             Controls.Add(panel);
 
             if (open != null)
@@ -2036,7 +2111,20 @@ namespace SendToUnity
             {
                 var cp = base.CreateParams;
                 cp.ExStyle |= 0x08000000 | 0x00000080 | 0x00000008;   // NOACTIVATE | TOOLWINDOW | TOPMOST
+                cp.ClassStyle |= 0x00020000;                           // ombra, come i menu
                 return cp;
+            }
+        }
+
+        // Angoli arrotondati e bordo sottile come i menu di Windows 11; su Windows 10 un bordo di 1 pixel
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            if (!Native.RoundCorners(Handle, Look.Border))
+            {
+                Padding = new Padding(1);
+                BackColor = Look.Border;
+                foreach (Control c in Controls) c.BackColor = Look.Background;
             }
         }
 
@@ -2173,6 +2261,24 @@ namespace SendToUnity
     static class Native
     {
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+        // Windows 11: angoli arrotondati e colore del bordo; false se Windows non li supporta
+        public static bool RoundCorners(IntPtr window, Color border)
+        {
+            try
+            {
+                int round = 2;   // DWMWCP_ROUND
+                if (DwmSetWindowAttribute(window, 33, ref round, 4) != 0) return false;
+                int color = border.R | (border.G << 8) | (border.B << 16);
+                DwmSetWindowAttribute(window, 34, ref color, 4);   // DWMWA_BORDER_COLOR
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
         [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
