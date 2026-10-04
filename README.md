@@ -26,7 +26,10 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
   di Unity; se ne manca uno: **Scegli progetto e cartella...** > **Sfoglia...**
   Due progetti con lo stesso nome si distinguono dalla cartella che li contiene.
 - Se il progetto è **aperto in Unity**, a copia finita Unity viene portato in primo piano e
-  importa subito i file. Se è chiuso, li importa alla prossima apertura.
+  importa subito i file. Se è chiuso, li importa alla prossima apertura. Nella finestra di scelta
+  i progetti aperti hanno un pallino verde.
+
+  ![Progetti aperti](docs/progetti-aperti.png)
 - Se un file **esiste già** puoi sostituirlo o saltarlo. Sostituendo, il file `.meta` resta:
   riferimenti e impostazioni di import in Unity non si rompono. Premendo Invio si sostituisce.
   Se Unity sta ancora importando il vecchio file, il programma aspetta qualche secondo e riprova.
@@ -58,6 +61,9 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 
 ## Da sapere
 
+- Il menu del tasto destro non mostra quali progetti sono aperti: Windows lo legge dal registro,
+  che il programma aggiorna solo a ogni invio, quindi lo stato sarebbe vecchio.
+- La notifica segue il tema di Windows (chiaro o scuro), come i menu.
 - **Windows 11**: la voce è nel menu classico, cioè sotto "Mostra altre opzioni". Più veloce:
   **Maiusc + tasto destro**, che apre subito il menu classico.
 - Unity importa da solo solo se in *Preferences > Asset Pipeline* è attivo **Auto Refresh**

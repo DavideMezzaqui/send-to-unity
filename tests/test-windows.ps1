@@ -467,7 +467,7 @@ try {
     if ($dialog) {
         Save-Shot $dialog '5-finestra-unity-aperto'
         $combo = Get-Controls $dialog | Where-Object { $_.Class -like '*COMBOBOX*' } | Sort-Object Top | Select-Object -First 1
-        Check ($combo.Text -eq (Split-Path $p2 -Leaf)) "la casella del progetto contiene il nome ($($combo.Text))"
+        Check ($combo.Text -like ((Split-Path $p2 -Leaf) + '*')) "la casella del progetto contiene il nome ($($combo.Text))"
         [void][Win]::SendMessage($combo.Handle, 0x014F, [IntPtr]1, $null)   # CB_SHOWDROPDOWN
         Start-Sleep -Milliseconds 600
         Shot-Screen '11-elenco-progetti'
