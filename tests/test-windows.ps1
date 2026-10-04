@@ -353,6 +353,7 @@ try {
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p1), (Q $first))
     Check ($null -ne (Find-Window $proc.Id 'Invia a Unity - notifica')) 'notifica del primo invio'
+    Start-Sleep -Seconds 2   # una persona impiega almeno questo per il secondo tasto destro
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $proc2 = Start-Tool @('--to', (Q $p1), (Q $second))
     while ($watch.ElapsedMilliseconds -lt 10000 -and -not (Exists (Join-Path $dest 'secondo.png'))) { Start-Sleep -Milliseconds 50 }

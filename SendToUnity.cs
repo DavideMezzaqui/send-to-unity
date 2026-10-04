@@ -342,11 +342,12 @@ namespace SendToUnity
         static int Quick(string project, string folder, Collector collector)
         {
             int status = 0;
+            CopyJob job = null;
             var files = collector.Take();
             while (files.Count > 0)
             {
                 // un giro per ogni invio, con il suo conteggio e la sua domanda sui file già presenti
-                var job = new CopyJob(project, folder, false);
+                if (job == null) job = new CopyJob(project, folder, false);
                 do
                 {
                     if (!job.Run(files))
@@ -354,8 +355,8 @@ namespace SendToUnity
                         collector.Close();
                         return status;
                     }
-                    // con molti file Explorer avvia le istanze a ondate: si copia finché ne arrivano
-                    collector.WaitQuiet(500, 3000);
+                    // con molti file Explorer avvia le istanze a ondate (a volte con pause): si copia finché ne arrivano
+                    collector.WaitQuiet(900, 3000);
                     files = collector.Take();
                 }
                 while (files.Count > 0);
@@ -365,9 +366,12 @@ namespace SendToUnity
                 Log.Write("notifica: " + job.Result.Copied + " copiati, " + job.Result.Skipped + " saltati");
                 if (job.Result.Errors.Count > 0) status = 1;
                 // un nuovo invio mentre la notifica è visibile la chiude e viene copiato subito
+                var shown = Stopwatch.StartNew();
                 Ui.ShowResult(job.Result, () => collector.HasPending);
                 files = collector.Take();
                 if (files.Count == 0) files = collector.Close();
+                // file arrivati appena dopo: sono ancora lo stesso invio (Explorer in ritardo), il conteggio continua
+                if (shown.ElapsedMilliseconds > 1500) job = null;
             }
             Remember(project, folder);
             return status;
