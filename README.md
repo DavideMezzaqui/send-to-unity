@@ -50,7 +50,7 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
 
 ## Installazione
 
-1. Scarica la cartella `send-to-unity` ed estraila.
+1. Su GitHub: **Code** > **Download ZIP**, poi estrai lo zip.
 2. Doppio clic su `install.cmd`.
 
 Non servono permessi di amministratore né download: il programma viene compilato sul tuo PC

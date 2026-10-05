@@ -1,0 +1,32 @@
+name: Test su Windows
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: test-windows
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installa e prova Invia a Unity
+        shell: powershell
+        run: .\tests\test-windows.ps1
+
+      - name: Screenshot delle finestre
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot
+          path: ${{ runner.temp }}\stu-shots
+          if-no-files-found: ignore
