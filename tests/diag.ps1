@@ -2,33 +2,38 @@
 $ErrorActionPreference = 'Continue'
 function W([string]$t) { [Console]::WriteLine($t) }
 $src = Split-Path -Parent $PSScriptRoot
-$clsid = '{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}'
-Add-Type @'
-using System; using System.Runtime.InteropServices; using System.Diagnostics;
-public static class Tok {
-    [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr t);
-    [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr t, int cls, out int info, int len, out int ret);
-    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-    public static string Elevated(int pid) {
-        IntPtr p = OpenProcess(0x1000, false, pid); IntPtr t; int v; int r;
-        if (!OpenProcessToken(p, 8, out t)) return "token? " + Marshal.GetLastWin32Error();
-        GetTokenInformation(t, 20, out v, 4, out r); string e = v != 0 ? "elevato" : "non elevato";
-        GetTokenInformation(t, 18, out v, 4, out r); return e + ", tipo " + v;
-    }
-}
-'@
-foreach ($p in [Diagnostics.Process]::GetProcessesByName('explorer')) { W "explorer $($p.Id): $([Tok]::Elevated($p.Id))" }
-W "questo powershell: $([Tok]::Elevated($PID))"
+$share = 'C:\stu-normale'
+[void][IO.Directory]::CreateDirectory($share)
+Copy-Item -Recurse -Force (Join-Path $src '*') $share
+icacls $share /grant 'Users:(OI)(CI)M' /T /Q | Out-Null
 
-& (Join-Path $src 'install.cmd') /quiet
-$probe = Join-Path $env:RUNNER_TEMP 'probe.ps1'
-$result = Join-Path $env:RUNNER_TEMP 'probe.txt'
-[IO.File]::WriteAllText($probe, @"
-`$r = try { [void][Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'$clsid')); 'creato' } catch { `$_.Exception.InnerException.Message }
-Add-Type -TypeDefinition '$((Get-Content -Raw $PSCommandPath) -replace "(?s).*?Add-Type @'(.*?)'@.*", '$1' -replace "'", "''")'
-[IO.File]::WriteAllText('$result', `$r + ' / ' + [Tok]::Elevated(`$PID))
-"@)
-runas /trustlevel:0x20000 "powershell -NoProfile -ExecutionPolicy Bypass -File $probe"
-for ($i = 0; $i -lt 30 -and -not (Test-Path $result); $i++) { Start-Sleep -Milliseconds 500 }
-if (Test-Path $result) { W ("utente normale, solo HKCU: " + [IO.File]::ReadAllText($result)) } else { W 'utente normale: nessun risultato' }
+$password = 'Pr0va!' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+$secure = ConvertTo-SecureString $password -AsPlainText -Force
+New-LocalUser -Name 'stuprova' -Password $secure -AccountNeverExpires | Out-Null
+$cred = New-Object Management.Automation.PSCredential ('.\stuprova', $secure)
+
+$probe = Join-Path $share 'probe.ps1'
+[IO.File]::WriteAllText($probe, @'
+$out = 'C:\stu-normale\probe.txt'
+function Say([string]$t) { [IO.File]::AppendAllText($out, $t + "`r`n") }
+try {
+    Say ('utente: ' + [Security.Principal.WindowsIdentity]::GetCurrent().Name + ', admin: ' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+    $p = Start-Process cmd.exe -ArgumentList '/c', 'C:\stu-normale\install.cmd', '/quiet' -Wait -PassThru -WindowStyle Hidden
+    Say ('install.cmd: ' + $p.ExitCode)
+    $r = try { [void][Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23')); 'creato' } catch { $_.Exception.InnerException.Message }
+    Say ('comando: ' + $r)
+    Add-Type -Path 'C:\stu-normale\tests\WinTest.cs' -ReferencedAssemblies System.Drawing, System.Windows.Forms
+    $file = Join-Path $env:TEMP 'prova.png'
+    [IO.File]::WriteAllText($file, 'x')
+    $items = [ExplorerMenu]::Submenu(@($file), 'Invia a Unity', '')
+    Say ('menu: ' + ($(if ($null -eq $items) { 'voce assente: ' + ([ExplorerMenu]::TopItems -join ' | ') } else { $items -join ' | ' })))
+} catch { Say ('errore: ' + $_.Exception.ToString()) }
+Say 'fine'
+'@)
+try {
+    $p = Start-Process powershell.exe -Credential $cred -LoadUserProfile -WorkingDirectory $share -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $probe -PassThru
+    $p.WaitForExit(120000) | Out-Null
+} catch { W "avvio come utente normale: $($_.Exception.Message)" }
+if (Test-Path "$share\probe.txt") { foreach ($l in [IO.File]::ReadAllLines("$share\probe.txt")) { W $l } } else { W 'nessun risultato' }
+Remove-LocalUser -Name 'stuprova'
 exit 0
