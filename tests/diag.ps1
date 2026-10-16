@@ -2,39 +2,33 @@
 $ErrorActionPreference = 'Continue'
 function W([string]$t) { [Console]::WriteLine($t) }
 $src = Split-Path -Parent $PSScriptRoot
-$app = Join-Path $env:LOCALAPPDATA 'SendToUnity'
 $clsid = '{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}'
+Add-Type @'
+using System; using System.Runtime.InteropServices; using System.Diagnostics;
+public static class Tok {
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr t);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr t, int cls, out int info, int len, out int ret);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    public static string Elevated(int pid) {
+        IntPtr p = OpenProcess(0x1000, false, pid); IntPtr t; int v; int r;
+        if (!OpenProcessToken(p, 8, out t)) return "token? " + Marshal.GetLastWin32Error();
+        GetTokenInformation(t, 20, out v, 4, out r); string e = v != 0 ? "elevato" : "non elevato";
+        GetTokenInformation(t, 18, out v, 4, out r); return e + ", tipo " + v;
+    }
+}
+'@
+foreach ($p in [Diagnostics.Process]::GetProcessesByName('explorer')) { W "explorer $($p.Id): $([Tok]::Elevated($p.Id))" }
+W "questo powershell: $([Tok]::Elevated($PID))"
 
 & (Join-Path $src 'install.cmd') /quiet
-foreach ($f in [IO.Directory]::GetFiles($app)) { W "file: $f" }
-function Try-Create([string]$what) {
-    try {
-        $c = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]$clsid))
-        W "$what -> creato $($c.GetType().FullName)"
-    } catch { W "$what -> errore $($_.Exception.InnerException.Message)" }
-}
-Try-Create 'HKCU, powershell'
-$dll = [IO.Directory]::GetFiles($app, 'SendToUnityMenu-*.dll')[0]
-try {
-    $asm = [Reflection.Assembly]::LoadFrom($dll)
-    W "assembly: $($asm.FullName)"
-    $t = $asm.GetType('SendToUnity.MenuCommand')
-    $o = [Activator]::CreateInstance($t)
-    W "istanza diretta: $o"
-} catch { W "LoadFrom: $($_.Exception.ToString())" }
-
-New-Item -Force -Path 'HKLM:\SOFTWARE\Microsoft\Fusion' | Out-Null
-Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Fusion' -Name LogFailures -Value 1 -Type DWord
-[void][IO.Directory]::CreateDirectory('C:\fusion')
-Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Fusion' -Name LogPath -Value 'C:\fusion\' -Type String
-$out = powershell -NoProfile -Command "try { [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'$clsid')) | Out-Null; 'nuovo processo HKCU -> creato' } catch { 'nuovo processo HKCU -> ' + `$_.Exception.InnerException.Message }"
-W ($out -join ' ')
-foreach ($f in [IO.Directory]::GetFiles('C:\fusion', '*.htm', 'AllDirectories')) {
-    if ($f -notmatch 'SendToUnity') { continue }
-    W "=== $f"
-    foreach ($l in [IO.File]::ReadAllLines($f)) { W "  $l" }
-}
-reg copy "HKCU\Software\Classes\CLSID\$clsid" "HKLM\Software\Classes\CLSID\$clsid" /s /f
-$out = powershell -NoProfile -Command "try { [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'$clsid')) | Out-Null; 'nuovo processo HKLM -> creato' } catch { 'nuovo processo HKLM -> ' + `$_.Exception.InnerException.Message }"
-W ($out -join ' ')
+$probe = Join-Path $env:RUNNER_TEMP 'probe.ps1'
+$result = Join-Path $env:RUNNER_TEMP 'probe.txt'
+[IO.File]::WriteAllText($probe, @"
+`$r = try { [void][Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'$clsid')); 'creato' } catch { `$_.Exception.InnerException.Message }
+Add-Type -TypeDefinition '$((Get-Content -Raw $PSCommandPath) -replace "(?s).*?Add-Type @'(.*?)'@.*", '$1' -replace "'", "''")'
+[IO.File]::WriteAllText('$result', `$r + ' / ' + [Tok]::Elevated(`$PID))
+"@)
+runas /trustlevel:0x20000 "powershell -NoProfile -ExecutionPolicy Bypass -File $probe"
+for ($i = 0; $i -lt 30 -and -not (Test-Path $result); $i++) { Start-Sleep -Milliseconds 500 }
+if (Test-Path $result) { W ("utente normale, solo HKCU: " + [IO.File]::ReadAllText($result)) } else { W 'utente normale: nessun risultato' }
 exit 0
