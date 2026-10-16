@@ -24,6 +24,7 @@ $classKey   = 'Software\Classes\CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}'
 $sendToLink = Join-Path ([Environment]::GetFolderPath('SendTo')) 'Progetto Unity.lnk'
 $script:failures = 0
 $fake = $null
+$normalUser = $false
 
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
 Add-Type -Path (Join-Path $PSScriptRoot 'WinTest.cs')
@@ -219,6 +220,16 @@ function Find-ExplorerWindow([string]$folder, [int]$timeoutMs = 15000) {
     $null
 }
 
+# Il runner esegue tutto da amministratore, Esplora risorse compreso, e i processi elevati ignorano
+# i componenti COM registrati per l'utente (HKCU): per il test copio la registrazione del menu
+# anche in HKLM. Il caso vero, un utente normale con la sola registrazione in HKCU, e' la sezione 15.
+function Install-Tool {
+    Run-Native { & (Join-Path $src 'install.cmd') /quiet }
+    $code = $LASTEXITCODE
+    Run-Native { reg copy "HKCU\$classKey" "HKLM\$classKey" /s /f }
+    $code
+}
+
 # Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
 function Menu([string[]]$paths, $click = $null) {
     try {
@@ -243,8 +254,7 @@ try {
     $old.Close()
     New-File (Join-Path $app 'launcher.vbs') 'vecchio' | Out-Null
 
-    Run-Native { & (Join-Path $src 'install.cmd') /quiet }
-    Check ($LASTEXITCODE -eq 0) 'install.cmd termina senza errori'
+    Check ((Install-Tool) -eq 0) 'install.cmd termina senza errori'
     Check (Exists $exe) 'programma compilato con il compilatore C# di Windows'
     Check (-not (Exists (Join-Path $app 'launcher.vbs'))) 'file della vecchia versione rimossi'
     $key = $registry.OpenSubKey($fileMenu)
@@ -290,16 +300,6 @@ try {
     $albedo = New-File (Join-Path $in 'roccia_albedo.png') 'A1'
     $normal = New-File (Join-Path $in 'roccia_normal.png') 'N1'
     $items = Menu @($albedo)
-    if ($null -eq $items) {
-        Note ('amministratore: ' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) +
-            ', EnableLUA: ' + (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA)
-        Note ('CLSID visibile in HKCR: ' + ($null -ne [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}')))
-        try {
-            $command = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23'))
-            Note ('comando creato: ' + $command.GetType().FullName)
-        } catch { Note ('comando non creato: ' + $_.Exception.InnerException.Message + ' / ' + $_.Exception.Message) }
-        Note ('passi: ' + [ExplorerMenu]::Steps(@($albedo), 'Invia a Unity', 3, ''))
-    }
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Note ('sottomenu: ' + (@($items) -join ' | '))
     Check (@($items).Count -eq 4) 'sottomenu: 2 progetti, separatore, "Scegli progetto e cartella..." (il progetto sparito escluso)'
@@ -680,8 +680,7 @@ try {
     }
 
     Write-Host '--- 13. aggiornamento: reinstallare non perde le impostazioni'
-    Run-Native { & (Join-Path $src 'install.cmd') /quiet }
-    Check ($LASTEXITCODE -eq 0) 'reinstallazione senza errori'
+    Check ((Install-Tool) -eq 0) 'reinstallazione senza errori'
     $label = [string](@(Menu @($albedo) | ForEach-Object { $_ }) | Select-Object -First 1)
     Check ($label -like '*Assets/Kits') "dopo la reinstallazione il menu ricorda ancora la cartella ($label)"
     Check (@(Get-ChildItem $app -Filter 'SendToUnityMenu-*.dll').Count -ge 1) 'DLL del menu nuova accanto a quella ancora in uso'
@@ -692,9 +691,33 @@ try {
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'
     Check ($null -eq $registry.OpenSubKey($dirMenu)) 'voce sulle cartelle rimossa'
     Check ($null -eq $registry.OpenSubKey($classKey)) 'comando del menu rimosso'
+    Run-Native { reg delete "HKLM\$classKey" /f }
     Check (-not (Exists $sendToLink)) 'collegamento in "Invia a" rimosso'
     Check (-not (Exists $app)) 'cartella del programma rimossa'
     Check ($null -eq (Menu @($albedo))) 'la voce non compare piu nel menu'
+
+    Write-Host '--- 15. utente normale, senza permessi di amministratore'
+    # un utente vero creato per il test: installa, apre il menu, invia un file al progetto aperto
+    $share = 'C:\stu-normale'
+    [void][IO.Directory]::CreateDirectory($share)
+    Copy-Item -Recurse -Force (Join-Path $src '*') $share
+    Run-Native { icacls $share /grant 'Users:(OI)(CI)M' /T /Q }
+    $password = 'Pr0va!' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $secure = ConvertTo-SecureString $password -AsPlainText -Force
+    New-LocalUser -Name 'stuprova' -Password $secure -AccountNeverExpires | Out-Null
+    $normalUser = $true
+    $credential = New-Object Management.Automation.PSCredential ('.\stuprova', $secure)
+    $report = Join-Path $share 'esito.txt'
+    $proc = Start-Process powershell.exe -Credential $credential -LoadUserProfile -WorkingDirectory $share -PassThru `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $share 'tests\normal-user.ps1'), $report
+    if (-not $proc.WaitForExit(180000)) { Note 'lo script dell''utente normale non finisce: lo termino'; try { $proc.Kill() } catch { } }
+    $lines = if (Exists $report) { @([IO.File]::ReadAllLines($report)) } else { @() }
+    foreach ($line in $lines) {
+        if ($line -like 'OK *') { Check $true $line.Substring(3) }
+        elseif ($line -like 'KO *') { Check $false $line.Substring(3) }
+        else { Note $line }
+    }
+    Check ($lines -contains 'fine') 'lo script dell''utente normale arriva in fondo'
 }
 catch {
     Write-Host "FAIL  errore nel test: $($_.Exception.Message)"
@@ -703,6 +726,7 @@ catch {
 }
 finally {
     if ($fake) { try { $fake.Kill() } catch { } }
+    if ($normalUser) { try { Remove-LocalUser -Name 'stuprova' } catch { } }
     Get-Process SendToUnity -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
 
     Write-Host '--- log del programma'

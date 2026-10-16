@@ -21,7 +21,7 @@ jobs:
 
       - name: Installa e prova Invia a Unity
         shell: powershell
-        run: .\tests\diag.ps1
+        run: .\tests\test-windows.ps1
 
       - name: Screenshot delle finestre
         if: always()
