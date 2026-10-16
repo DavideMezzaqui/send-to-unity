@@ -26,8 +26,9 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
   di Unity; se ne manca uno: **Scegli progetto e cartella...** > **Sfoglia...**
   Due progetti con lo stesso nome si distinguono dalla cartella che li contiene.
 - Se il progetto è **aperto in Unity**, a copia finita Unity viene portato in primo piano e
-  importa subito i file. Se è chiuso, li importa alla prossima apertura. Nella finestra di scelta
-  i progetti aperti hanno un pallino verde.
+  importa subito i file. Se è chiuso, li importa alla prossima apertura. I progetti aperti hanno
+  un pallino verde, sia nel menu sia nella finestra di scelta: il menu viene preparato ogni volta
+  che lo apri, quindi il pallino è sempre aggiornato.
 
   ![Progetti aperti](docs/progetti-aperti.png)
 - Se un file **esiste già** puoi sostituirlo o saltarlo. Sostituendo, il file `.meta` resta:
@@ -61,8 +62,9 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 
 ## Da sapere
 
-- Il menu del tasto destro non mostra quali progetti sono aperti: Windows lo legge dal registro,
-  che il programma aggiorna solo a ogni invio, quindi lo stato sarebbe vecchio.
+- Il menu del tasto destro è una piccola estensione di Esplora risorse (una DLL compilata da
+  `install.cmd`, registrata solo per il tuo utente). Se dopo un aggiornamento il menu sembra
+  ancora quello vecchio, esci da Windows e rientra (oppure riavvia Esplora risorse).
 - La notifica segue il tema di Windows (chiaro o scuro), come i menu.
 - **Windows 11**: la voce è nel menu classico, cioè sotto "Mostra altre opzioni". Più veloce:
   **Maiusc + tasto destro**, che apre subito il menu classico.
@@ -75,7 +77,10 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 ## Per chi lo modifica
 
 - `SendToUnity.cs` è tutto il programma. Deve restare compatibile con C# 5, perché lo compila
-  il compilatore incluso in Windows.
+  il compilatore incluso in Windows. `install.cmd` lo compila due volte: come programma e come
+  DLL del menu (`IExplorerCommand`), che Esplora risorse carica per mostrare le voci.
 - `tests/test-windows.ps1` lo installa e lo prova su una vera macchina Windows (GitHub Actions,
   a ogni modifica di questa cartella): menu del tasto destro vero, finestre, copie, `.meta`,
-  file bloccati, progetto aperto in un finto Unity, disinstallazione.
+  file bloccati, progetto aperto in un finto Unity, disinstallazione. Il runner gira da
+  amministratore, quindi una parte del test crea un utente normale e rifà installazione, menu e
+  invio come lui.
