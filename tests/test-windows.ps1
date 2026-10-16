@@ -290,6 +290,16 @@ try {
     $albedo = New-File (Join-Path $in 'roccia_albedo.png') 'A1'
     $normal = New-File (Join-Path $in 'roccia_normal.png') 'N1'
     $items = Menu @($albedo)
+    if ($null -eq $items) {
+        Note ('amministratore: ' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) +
+            ', EnableLUA: ' + (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA)
+        Note ('CLSID visibile in HKCR: ' + ($null -ne [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}')))
+        try {
+            $command = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23'))
+            Note ('comando creato: ' + $command.GetType().FullName)
+        } catch { Note ('comando non creato: ' + $_.Exception.InnerException.Message + ' / ' + $_.Exception.Message) }
+        Note ('passi: ' + [ExplorerMenu]::Steps(@($albedo), 'Invia a Unity', 3, ''))
+    }
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Note ('sottomenu: ' + (@($items) -join ' | '))
     Check (@($items).Count -eq 4) 'sottomenu: 2 progetti, separatore, "Scegli progetto e cartella..." (il progetto sparito escluso)'
