@@ -24,10 +24,17 @@ if not exist "%DEST%" mkdir "%DEST%"
 rem chiude eventuali finestre del programma rimaste aperte prima di sostituirlo
 taskkill /im SendToUnity.exe /f >nul 2>&1
 
-"%CSC%" /nologo /codepage:65001 /target:winexe /optimize+ /out:"%EXE%" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll "%SRC%"
+set "REFS=/r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll"
+"%CSC%" /nologo /codepage:65001 /target:winexe /optimize+ /out:"%EXE%" %REFS% "%SRC%"
 if errorlevel 1 goto fail
 
-start "" /wait "%EXE%" --install
+rem Lo stesso codice come DLL per il menu del tasto destro. Ha un nome nuovo a ogni installazione
+rem perche' Esplora risorse tiene bloccata quella che ha gia' caricato.
+set "MENU=%DEST%\SendToUnityMenu-%RANDOM%%RANDOM%%RANDOM%.dll"
+"%CSC%" /nologo /codepage:65001 /target:library /optimize+ /out:"%MENU%" %REFS% "%SRC%"
+if errorlevel 1 goto fail
+
+start "" /wait "%EXE%" --install "%MENU%"
 if errorlevel 1 goto fail
 
 echo.

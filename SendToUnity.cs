@@ -29,9 +29,14 @@ namespace SendToUnity
         public static readonly string Dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SendToUnity");
 
+        // Dentro Esplora risorse gira la DLL del menu, che sta nella stessa cartella del programma
         public static string ExePath
         {
-            get { return Assembly.GetExecutingAssembly().Location; }
+            get
+            {
+                string self = Assembly.GetExecutingAssembly().Location;
+                return self.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? self : Path.Combine(Dir, "SendToUnity.exe");
+            }
         }
     }
 
@@ -65,13 +70,13 @@ namespace SendToUnity
             switch (command)
             {
                 case "--install":
-                    Installer.Install();
+                    Installer.Install(list.Count > 1 ? list[1] : null);
                     return 0;
                 case "--uninstall":
                     Installer.Uninstall();
                     return 0;
                 case "--refresh":
-                    ShellMenu.Refresh();
+                    ShellMenu.Register(null);
                     return 0;
             }
 
@@ -85,6 +90,15 @@ namespace SendToUnity
             else if (command == "--pick")
             {
                 list.RemoveAt(0);
+            }
+
+            // --list <file> = elenco scritto dal menu (un percorso per riga): niente limiti di lunghezza
+            int at = list.IndexOf("--list");
+            if (at >= 0 && at + 1 < list.Count)
+            {
+                string listFile = list[at + 1];
+                list.RemoveRange(at, 2);
+                list.AddRange(MenuCommand.ReadList(listFile));
             }
 
             var files = list.Where(f => f.Trim().Length > 0).ToList();
@@ -327,7 +341,6 @@ namespace SendToUnity
                 {
                     collector.Close();
                     Ui.Error("Questo progetto non esiste più (o non è un progetto Unity):\n" + project);
-                    ShellMenu.TryRefresh();
                     return 1;
                 }
                 string folder = settings.FolderFor(project);
@@ -406,7 +419,6 @@ namespace SendToUnity
             try
             {
                 Settings.Update(s => s.Remember(project, folder));
-                ShellMenu.Refresh();
             }
             catch (Exception ex)
             {
@@ -1327,15 +1339,28 @@ namespace SendToUnity
     }
 
     // ------------------------------------------------------------------ menu del tasto destro
+    // "Invia a Unity" è un comando di Esplora risorse (IExplorerCommand, più sotto). install.cmd
+    // compila questo stesso file anche come DLL, che Explorer carica e interroga ogni volta che
+    // apre il menu: l'elenco dei progetti è sempre aggiornato e quelli aperti hanno il pallino verde.
+    // Tutto è registrato per l'utente corrente, senza permessi di amministratore.
 
     static class ShellMenu
     {
+        public const string ClassId = "{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}";
+        const string ClassKey = @"Software\Classes\CLSID\" + ClassId;
+        const string DllPrefix = "SendToUnityMenu-";
+        public const int MaxProjects = 10;
+
         static readonly string[] Keys =
         {
             @"Software\Classes\*\shell\SendToUnity",
             @"Software\Classes\Directory\shell\SendToUnity"
         };
-        const int MaxProjects = 10;
+
+        public static string OpenIcon
+        {
+            get { return Path.Combine(App.Dir, "aperto.ico"); }
+        }
 
         public static string HubExe()
         {
@@ -1344,31 +1369,29 @@ namespace SendToUnity
             return File.Exists(hub) ? hub : null;
         }
 
-        // Riscrive il sottomenu con le impostazioni salvate. Due invii che finiscono insieme non lo
-        // riscrivono nello stesso momento, e chi arriva dopo rilegge le impostazioni più nuove.
-        public static void Refresh()
+        // dll: la DLL appena compilata da install.cmd; null = la più recente nella cartella del programma.
+        // Ogni installazione ha un nome nuovo, perché Explorer tiene bloccata quella che ha già caricato.
+        public static void Register(string dll)
         {
-            using (var mutex = new Mutex(false, @"Local\SendToUnity_menu"))
+            if (dll == null) dll = Dlls().OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+            if (dll == null || !File.Exists(dll)) throw new FileNotFoundException("Manca la DLL del menu: rifai install.cmd.");
+            dll = Path.GetFullPath(dll);
+
+            Registry.CurrentUser.DeleteSubKeyTree(ClassKey, false);
+            using (var key = Registry.CurrentUser.CreateSubKey(ClassKey))
             {
-                bool owned;
-                try { owned = mutex.WaitOne(5000); }
-                catch (AbandonedMutexException) { owned = true; }
-                try
+                key.SetValue("", App.Name);
+                using (var server = key.CreateSubKey("InprocServer32"))
                 {
-                    Write(Settings.Load());
-                }
-                finally
-                {
-                    if (owned) mutex.ReleaseMutex();
+                    server.SetValue("", "mscoree.dll");
+                    server.SetValue("ThreadingModel", "Apartment");
+                    server.SetValue("Class", typeof(MenuCommand).FullName);
+                    server.SetValue("Assembly", Path.GetFileNameWithoutExtension(dll) + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null");
+                    server.SetValue("RuntimeVersion", "v4.0.30319");
+                    server.SetValue("CodeBase", "file:///" + dll.Replace('\\', '/'));
                 }
             }
-        }
 
-        // Un progetto per riga (i più usati in alto) + "Scegli progetto e cartella..."
-        static void Write(Settings settings)
-        {
-            var projects = Projects.Known(settings, false).Take(MaxProjects).ToList();
-            string exe = Paths.Quote(App.ExePath);
             string hub = HubExe();
             foreach (string keyPath in Keys)
             {
@@ -1376,51 +1399,414 @@ namespace SendToUnity
                 using (var key = Registry.CurrentUser.CreateSubKey(keyPath))
                 {
                     key.SetValue("MUIVerb", "&" + App.Name);   // tasto destro, poi I
-                    key.SetValue("SubCommands", "");
-                    key.SetValue("MultiSelectModel", "Player");
+                    key.SetValue("ExplorerCommandHandler", ClassId);
                     if (hub != null) key.SetValue("Icon", hub + ",0");
-                    using (var shell = key.CreateSubKey("shell"))
-                    {
-                        for (int i = 0; i < projects.Count; i++)
-                        {
-                            var p = projects[i];
-                            string folder = settings.FolderFor(p.Path);
-                            string label = Escape(p.DisplayName) + (folder != null ? "   →  " + Escape(folder) : "");
-                            AddItem(shell, i.ToString("00"), label, exe + " --to " + Paths.Quote(p.Path) + " \"%1\"", false);
-                        }
-                        AddItem(shell, "99", "Scegli progetto e cartella...", exe + " --pick \"%1\"", projects.Count > 0);
-                    }
                 }
             }
-        }
 
-        public static void TryRefresh()
-        {
-            try { Refresh(); }
-            catch (Exception ex) { Log.Write("menu non aggiornato: " + ex.Message); }
+            foreach (string old in Dlls())
+            {
+                if (Paths.Same(old, dll)) continue;
+                try { File.Delete(old); }
+                catch (Exception) { Log.Write("DLL del menu ancora in uso, la tolgo la prossima volta: " + old); }
+            }
+            Log.Write("menu registrato: " + dll);
         }
 
         public static void Remove()
         {
             foreach (string keyPath in Keys) Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
+            Registry.CurrentUser.DeleteSubKeyTree(ClassKey, false);
+            // quella caricata da Explorer non si cancella ma si può spostare: la cartella resta pulita
+            foreach (string dll in Dlls())
+            {
+                try { File.Delete(dll); }
+                catch (Exception)
+                {
+                    try { File.Move(dll, Path.Combine(Path.GetTempPath(), Path.GetFileName(dll))); }
+                    catch (Exception ex) { Log.Write("DLL del menu non rimossa: " + ex.Message); }
+                }
+            }
         }
 
-        static void AddItem(RegistryKey shell, string id, string label, string command, bool separatorBefore)
+        static string[] Dlls()
         {
-            using (var item = shell.CreateSubKey(id))
+            try { return Directory.GetFiles(App.Dir, DllPrefix + "*.dll"); }
+            catch (Exception) { return new string[0]; }
+        }
+
+        // Pallino verde dei progetti aperti, nelle misure che Windows usa nei menu ai vari DPI
+        public static void SaveOpenIcon()
+        {
+            int[] sizes = { 16, 20, 24, 32, 40, 48, 64 };
+            var images = new List<byte[]>();
+            foreach (int size in sizes) images.Add(DotImage(size));
+            Directory.CreateDirectory(App.Dir);
+            using (var writer = new BinaryWriter(File.Create(OpenIcon)))
             {
-                item.SetValue("MUIVerb", label);
-                // Player: la voce resta anche con più di 15 file (Explorer avvia un'istanza per file)
-                item.SetValue("MultiSelectModel", "Player");
-                if (separatorBefore) item.SetValue("CommandFlags", 0x20, RegistryValueKind.DWord);
-                using (var cmd = item.CreateSubKey("command")) cmd.SetValue("", command);
+                writer.Write((short)0);
+                writer.Write((short)1);
+                writer.Write((short)sizes.Length);
+                int offset = 6 + 16 * sizes.Length;
+                for (int i = 0; i < sizes.Length; i++)
+                {
+                    writer.Write((byte)sizes[i]);
+                    writer.Write((byte)sizes[i]);
+                    writer.Write((byte)0);
+                    writer.Write((byte)0);
+                    writer.Write((short)1);
+                    writer.Write((short)32);
+                    writer.Write(images[i].Length);
+                    writer.Write(offset);
+                    offset += images[i].Length;
+                }
+                foreach (var image in images) writer.Write(image);
+            }
+        }
+
+        // Immagine di un'icona: BITMAPINFOHEADER, pixel BGRA dal basso verso l'alto, maschera vuota
+        static byte[] DotImage(int size)
+        {
+            using (var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                using (var g = Graphics.FromImage(bitmap))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+                    float dot = size / 2f;
+                    float at = (size - dot) / 2f;
+                    using (var brush = new SolidBrush(SendDialog.OpenGreen)) g.FillEllipse(brush, at, at, dot, dot);
+                }
+                var data = bitmap.LockBits(new Rectangle(0, 0, size, size), System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                var pixels = new byte[size * size * 4];
+                try
+                {
+                    for (int y = 0; y < size; y++)
+                        Marshal.Copy(data.Scan0 + (size - 1 - y) * data.Stride, pixels, y * size * 4, size * 4);
+                }
+                finally
+                {
+                    bitmap.UnlockBits(data);
+                }
+                int maskRow = (size + 31) / 32 * 4;
+                using (var stream = new MemoryStream())
+                using (var writer = new BinaryWriter(stream))
+                {
+                    writer.Write(40);
+                    writer.Write(size);
+                    writer.Write(size * 2);
+                    writer.Write((short)1);
+                    writer.Write((short)32);
+                    writer.Write(0);
+                    writer.Write(pixels.Length + maskRow * size);
+                    writer.Write(0);
+                    writer.Write(0);
+                    writer.Write(0);
+                    writer.Write(0);
+                    writer.Write(pixels);
+                    writer.Write(new byte[maskRow * size]);
+                    writer.Flush();
+                    return stream.ToArray();
+                }
             }
         }
 
         // Nei menu & indica la lettera sottolineata: per mostrarla va raddoppiata
-        static string Escape(string text)
+        public static string Escape(string text)
         {
             return text.Replace("&", "&&");
+        }
+    }
+
+    // Interfacce di Esplora risorse usate dal menu
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IShellItem
+    {
+        [PreserveSig] int BindToHandler(IntPtr bindContext, ref Guid handler, ref Guid riid, out IntPtr result);
+        [PreserveSig] int GetParent(out IShellItem parent);
+        [PreserveSig] int GetDisplayName(uint type, out IntPtr name);
+        [PreserveSig] int GetAttributes(uint mask, out uint attributes);
+        [PreserveSig] int Compare(IShellItem other, uint hint, out int order);
+    }
+
+    [ComImport, Guid("b63ea76d-1f85-456f-a19c-48159efa858b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IShellItemArray
+    {
+        [PreserveSig] int BindToHandler(IntPtr bindContext, ref Guid handler, ref Guid riid, out IntPtr result);
+        [PreserveSig] int GetPropertyStore(int flags, ref Guid riid, out IntPtr result);
+        [PreserveSig] int GetPropertyDescriptionList(IntPtr keyType, ref Guid riid, out IntPtr result);
+        [PreserveSig] int GetAttributes(int flags, uint mask, out uint attributes);
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetItemAt(uint index, out IShellItem item);
+        [PreserveSig] int EnumItems(out IntPtr items);
+    }
+
+    [ComImport, Guid("a08ce4d0-fa25-44ab-b57c-c7b1c323e0b9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IExplorerCommand
+    {
+        [PreserveSig] int GetTitle(IShellItemArray items, out IntPtr title);
+        [PreserveSig] int GetIcon(IShellItemArray items, out IntPtr icon);
+        [PreserveSig] int GetToolTip(IShellItemArray items, out IntPtr tip);
+        [PreserveSig] int GetCanonicalName(out Guid name);
+        [PreserveSig] int GetState(IShellItemArray items, [MarshalAs(UnmanagedType.Bool)] bool okToBeSlow, out uint state);
+        [PreserveSig] int Invoke(IShellItemArray items, IntPtr bindContext);
+        [PreserveSig] int GetFlags(out uint flags);
+        [PreserveSig] int EnumSubCommands(out IEnumExplorerCommand commands);
+    }
+
+    [ComImport, Guid("a88826f8-186f-4987-aade-ea0cef8fbfe8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IEnumExplorerCommand
+    {
+        [PreserveSig] int Next(uint count, IntPtr commands, IntPtr fetched);
+        [PreserveSig] int Skip(uint count);
+        [PreserveSig] int Reset();
+        [PreserveSig] int Clone(out IEnumExplorerCommand copy);
+    }
+
+    // La voce "Invia a Unity": è la classe che Explorer crea dalla DLL. Gira dentro Explorer,
+    // quindi ogni metodo intercetta gli errori e la copia vera la fa il programma, avviato a parte.
+    [ComVisible(true), Guid("6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23"), ClassInterface(ClassInterfaceType.None)]
+    public class MenuCommand : IExplorerCommand
+    {
+        public const int Ok = 0;
+        public const int NotImplemented = unchecked((int)0x80004001);
+        public const uint HasSubCommands = 0x1;      // ECF_HASSUBCOMMANDS
+        public const uint SeparatorBefore = 0x20;    // ECF_SEPARATORBEFORE
+        const uint FileSystemPath = 0x80058000;      // SIGDN_FILESYSPATH
+
+        public int GetTitle(IShellItemArray items, out IntPtr title)
+        {
+            title = Marshal.StringToCoTaskMemUni("&" + App.Name);
+            return Ok;
+        }
+
+        public int GetIcon(IShellItemArray items, out IntPtr icon)
+        {
+            icon = IntPtr.Zero;
+            string hub = ShellMenu.HubExe();
+            if (hub == null) return NotImplemented;
+            icon = Marshal.StringToCoTaskMemUni(hub + ",0");
+            return Ok;
+        }
+
+        public int GetToolTip(IShellItemArray items, out IntPtr tip)
+        {
+            tip = IntPtr.Zero;
+            return NotImplemented;
+        }
+
+        public int GetCanonicalName(out Guid name)
+        {
+            name = new Guid(ShellMenu.ClassId);
+            return Ok;
+        }
+
+        public int GetState(IShellItemArray items, bool okToBeSlow, out uint state)
+        {
+            state = 0;   // ECS_ENABLED
+            return Ok;
+        }
+
+        public int Invoke(IShellItemArray items, IntPtr bindContext)
+        {
+            return Ok;
+        }
+
+        public int GetFlags(out uint flags)
+        {
+            flags = HasSubCommands;
+            return Ok;
+        }
+
+        public int EnumSubCommands(out IEnumExplorerCommand commands)
+        {
+            commands = new CommandList(Build());
+            return Ok;
+        }
+
+        // Un progetto per riga (i più usati in alto, sempre nello stesso ordine) + "Scegli progetto e cartella..."
+        static List<IExplorerCommand> Build()
+        {
+            var list = new List<IExplorerCommand>();
+            int count = 0;
+            try
+            {
+                var settings = Settings.Load();
+                foreach (var p in Projects.Known(settings, false).Take(ShellMenu.MaxProjects))
+                {
+                    string folder = settings.FolderFor(p.Path);
+                    string label = ShellMenu.Escape(p.DisplayName) + (folder != null ? "   →  " + ShellMenu.Escape(folder) : "");
+                    list.Add(new ProjectCommand(label, new[] { "--to", p.Path }, Projects.IsOpen(p.Path), false));
+                    count++;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("menu: progetti non letti: " + ex.Message);
+            }
+            list.Add(new ProjectCommand("Scegli progetto e cartella...", new[] { "--pick" }, false, count > 0));
+            return list;
+        }
+
+        // Avvia il programma con l'elenco dei file in un file temporaneo
+        public static void Launch(string[] arguments, IShellItemArray items)
+        {
+            var paths = ItemPaths(items);
+            if (paths.Count == 0) return;
+            string list = Path.Combine(Path.GetTempPath(), "SendToUnity-" + Guid.NewGuid().ToString("N") + ".txt");
+            File.WriteAllLines(list, paths, new UTF8Encoding(false));
+            string line = string.Join(" ", arguments.Select(Paths.Quote)) + " --list " + Paths.Quote(list);
+            Log.Write("menu: " + line + " (" + paths.Count + " elementi)");
+            Process.Start(new ProcessStartInfo(App.ExePath, line) { UseShellExecute = false });
+        }
+
+        static List<string> ItemPaths(IShellItemArray items)
+        {
+            var paths = new List<string>();
+            uint count;
+            if (items == null || items.GetCount(out count) != Ok) return paths;
+            for (uint i = 0; i < count; i++)
+            {
+                IShellItem item;
+                if (items.GetItemAt(i, out item) != Ok || item == null) continue;
+                IntPtr name;
+                if (item.GetDisplayName(FileSystemPath, out name) == Ok && name != IntPtr.Zero)
+                {
+                    paths.Add(Marshal.PtrToStringUni(name));
+                    Marshal.FreeCoTaskMem(name);
+                }
+            }
+            return paths;
+        }
+
+        public static List<string> ReadList(string file)
+        {
+            var lines = File.ReadAllLines(file, Encoding.UTF8).Where(l => l.Length > 0).ToList();
+            try { File.Delete(file); }
+            catch (Exception) { }
+            return lines;
+        }
+    }
+
+    public class ProjectCommand : IExplorerCommand
+    {
+        readonly string title;
+        readonly string[] arguments;
+        readonly bool open;
+        readonly bool separatorBefore;
+
+        public ProjectCommand(string title, string[] arguments, bool open, bool separatorBefore)
+        {
+            this.title = title;
+            this.arguments = arguments;
+            this.open = open;
+            this.separatorBefore = separatorBefore;
+        }
+
+        public int GetTitle(IShellItemArray items, out IntPtr text)
+        {
+            text = Marshal.StringToCoTaskMemUni(title);
+            return MenuCommand.Ok;
+        }
+
+        public int GetIcon(IShellItemArray items, out IntPtr icon)
+        {
+            icon = IntPtr.Zero;
+            if (!open || !File.Exists(ShellMenu.OpenIcon)) return MenuCommand.NotImplemented;
+            icon = Marshal.StringToCoTaskMemUni(ShellMenu.OpenIcon);
+            return MenuCommand.Ok;
+        }
+
+        public int GetToolTip(IShellItemArray items, out IntPtr tip)
+        {
+            tip = IntPtr.Zero;
+            if (!open) return MenuCommand.NotImplemented;
+            tip = Marshal.StringToCoTaskMemUni("Aperto in Unity");
+            return MenuCommand.Ok;
+        }
+
+        public int GetCanonicalName(out Guid name)
+        {
+            name = Guid.Empty;
+            return MenuCommand.NotImplemented;
+        }
+
+        public int GetState(IShellItemArray items, bool okToBeSlow, out uint state)
+        {
+            state = 0;
+            return MenuCommand.Ok;
+        }
+
+        public int Invoke(IShellItemArray items, IntPtr bindContext)
+        {
+            try
+            {
+                MenuCommand.Launch(arguments, items);
+                return MenuCommand.Ok;
+            }
+            catch (Exception ex)
+            {
+                Log.Write("menu: avvio non riuscito: " + ex);
+                return Marshal.GetHRForException(ex);
+            }
+        }
+
+        public int GetFlags(out uint flags)
+        {
+            flags = separatorBefore ? MenuCommand.SeparatorBefore : 0;
+            return MenuCommand.Ok;
+        }
+
+        public int EnumSubCommands(out IEnumExplorerCommand commands)
+        {
+            commands = null;
+            return MenuCommand.NotImplemented;
+        }
+    }
+
+    public class CommandList : IEnumExplorerCommand
+    {
+        readonly List<IExplorerCommand> commands;
+        int next;
+
+        public CommandList(List<IExplorerCommand> commands)
+        {
+            this.commands = commands;
+        }
+
+        public int Next(uint count, IntPtr output, IntPtr fetched)
+        {
+            int done = 0;
+            while (done < count && next < commands.Count)
+            {
+                IntPtr command = Marshal.GetComInterfaceForObject(commands[next], typeof(IExplorerCommand));
+                Marshal.WriteIntPtr(output, done * IntPtr.Size, command);
+                done++;
+                next++;
+            }
+            if (fetched != IntPtr.Zero) Marshal.WriteInt32(fetched, done);
+            return done == count ? MenuCommand.Ok : 1;   // S_FALSE: elenco finito
+        }
+
+        public int Skip(uint count)
+        {
+            next = (int)Math.Min(commands.Count, next + (long)count);
+            return next < commands.Count ? MenuCommand.Ok : 1;
+        }
+
+        public int Reset()
+        {
+            next = 0;
+            return MenuCommand.Ok;
+        }
+
+        public int Clone(out IEnumExplorerCommand copy)
+        {
+            var list = new CommandList(commands);
+            list.next = next;
+            copy = list;
+            return MenuCommand.Ok;
         }
     }
 
@@ -1431,7 +1817,7 @@ namespace SendToUnity
             get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "Progetto Unity.lnk"); }
         }
 
-        public static void Install()
+        public static void Install(string dll)
         {
             // resti della prima versione (PowerShell + VBScript)
             foreach (string old in new[] { "SendToUnity.ps1", "launcher.vbs", "config.json" })
@@ -1439,8 +1825,9 @@ namespace SendToUnity
             try { Directory.Delete(Path.Combine(Path.GetTempPath(), "SendToUnity-queue"), true); }
             catch (Exception) { }
 
-            ShellMenu.Refresh();
-            // "Invia a" passa tutti i file in una volta: serve quando se ne selezionano più di 15
+            ShellMenu.SaveOpenIcon();
+            ShellMenu.Register(dll);
+            // "Invia a" apre direttamente la finestra di scelta
             LinkFile.Create(SendToLink, App.ExePath, "--pick", ShellMenu.HubExe());
             Log.Write("installato: " + App.ExePath);
         }
@@ -1698,7 +2085,7 @@ namespace SendToUnity
             UpdateFilesLabel();
         }
 
-        static readonly Color OpenGreen = Color.FromArgb(22, 163, 74);
+        public static readonly Color OpenGreen = Color.FromArgb(22, 163, 74);
 
         // Progetto nell'elenco: pallino verde + nome + "aperto in Unity" in grigio se Unity lo ha aperto.
         // Lo spazio del pallino c'è sempre, così i nomi restano allineati.

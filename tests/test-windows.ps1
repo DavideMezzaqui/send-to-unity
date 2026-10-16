@@ -20,6 +20,7 @@ $savedLog   = Join-Path $env:RUNNER_TEMP 'stu-log.txt'
 $registry   = [Microsoft.Win32.Registry]::CurrentUser
 $fileMenu   = 'Software\Classes\*\shell\SendToUnity'
 $dirMenu    = 'Software\Classes\Directory\shell\SendToUnity'
+$classKey   = 'Software\Classes\CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}'
 $sendToLink = Join-Path ([Environment]::GetFolderPath('SendTo')) 'Progetto Unity.lnk'
 $script:failures = 0
 $fake = $null
@@ -251,7 +252,15 @@ try {
     if ($key) {
         Check ($key.GetValue('MUIVerb') -eq '&Invia a Unity') 'testo della voce, con la I come scorciatoia'
         Check ($null -eq $key.OpenSubKey('command')) 'vecchia voce sostituita'
+        Check ($key.GetValue('ExplorerCommandHandler') -eq '{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}') 'la voce e'' il comando del menu dinamico'
     }
+    $server = $registry.OpenSubKey("$classKey\InprocServer32")
+    Check ($null -ne $server) 'comando del menu registrato per l''utente'
+    if ($server) {
+        $dll = ([string]$server.GetValue('CodeBase')).Replace('file:///', '').Replace('/', '\')
+        Check (Exists $dll) "DLL del menu compilata ($dll)"
+    }
+    Check (Exists (Join-Path $app 'aperto.ico')) 'icona del pallino verde'
     Check ($null -ne $registry.OpenSubKey($dirMenu)) 'voce "Invia a Unity" sulle cartelle'
     Check (Exists $sendToLink) 'collegamento in "Invia a"'
     if (Exists $sendToLink) {
@@ -461,6 +470,13 @@ try {
     if ($fakeWindow) { $fakeHandle = $fakeWindow.Handle }
 
     $smoke = New-File (Join-Path $in 'fumo.png') 'S1'
+    $items = @(Menu @($smoke) | ForEach-Object { $_ })
+    $icons = @([ExplorerMenu]::Icons)
+    Note ('sottomenu con Unity aperto: ' + ($items -join ' | ') + ' / icone: ' + ($icons -join ' '))
+    $openAt = [Array]::FindIndex([string[]]$items, [Predicate[string]]{ param($t) $t -like 'Altro progetto*' })
+    $closedAt = [Array]::FindIndex([string[]]$items, [Predicate[string]]{ param($t) $t -like 'Gioco*' })
+    Check ($openAt -ge 0 -and $icons[$openAt]) 'nel menu il progetto aperto in Unity ha il pallino verde'
+    Check ($closedAt -ge 0 -and -not $icons[$closedAt]) 'nel menu il progetto chiuso non ha il pallino'
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p2), (Q $smoke))
     $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
@@ -510,7 +526,6 @@ try {
     [void](Wait-Idle)
     Check ((Read-File (Join-Path $p2 'Assets\Spostati\da_spostare.png')) -eq 'M') 'file spostato nel progetto aperto (proposto per primo)'
     Check (-not (Exists $moving)) "spostando, l'originale sparisce"
-    try { $fake.Kill() } catch { }
 
     Write-Host '--- 9. il vero Esplora risorse, da tastiera'
     $realDir = Join-Path $work 'esplora'
@@ -537,6 +552,11 @@ try {
         Check ((Read-File (Join-Path $p2 'Assets\Spostati\texture_vera.png')) -eq 'R') 'dal vero menu di Esplora risorse il file arriva nel progetto'
         try { $explorer.Quit() } catch { }
     }
+    try { $fake.Kill() } catch { }
+    Start-Sleep -Seconds 1
+    $items = @(Menu @($realFile) | ForEach-Object { $_ })
+    $openAt = [Array]::FindIndex([string[]]$items, [Predicate[string]]{ param($t) $t -like 'Altro progetto*' })
+    Check ($openAt -ge 0 -and -not [ExplorerMenu]::Icons[$openAt]) 'chiuso Unity, il pallino sparisce subito dal menu'
 
     Write-Host '--- 10. file .meta di Unity'
     $p3 = Join-Path $work 'Altri\Gioco [Prova] & Co'
@@ -652,14 +672,16 @@ try {
     Write-Host '--- 13. aggiornamento: reinstallare non perde le impostazioni'
     Run-Native { & (Join-Path $src 'install.cmd') /quiet }
     Check ($LASTEXITCODE -eq 0) 'reinstallazione senza errori'
-    $label = [string]$registry.OpenSubKey("$fileMenu\shell\00").GetValue('MUIVerb')
+    $label = [string](@(Menu @($albedo) | ForEach-Object { $_ }) | Select-Object -First 1)
     Check ($label -like '*Assets/Kits') "dopo la reinstallazione il menu ricorda ancora la cartella ($label)"
+    Check (@(Get-ChildItem $app -Filter 'SendToUnityMenu-*.dll').Count -ge 1) 'DLL del menu nuova accanto a quella ancora in uso'
 
     Write-Host '--- 14. disinstallazione'
     Copy-Item -LiteralPath $log -Destination $savedLog -ErrorAction SilentlyContinue
     Run-Native { & (Join-Path $src 'uninstall.cmd') /quiet }
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'
     Check ($null -eq $registry.OpenSubKey($dirMenu)) 'voce sulle cartelle rimossa'
+    Check ($null -eq $registry.OpenSubKey($classKey)) 'comando del menu rimosso'
     Check (-not (Exists $sendToLink)) 'collegamento in "Invia a" rimosso'
     Check (-not (Exists $app)) 'cartella del programma rimossa'
     Check ($null -eq (Menu @($albedo))) 'la voce non compare piu nel menu'

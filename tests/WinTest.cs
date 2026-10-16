@@ -160,6 +160,7 @@ public static class ExplorerMenu {
     const uint Last = 0x7FFF;
 
     public static bool Invoked;
+    public static List<bool> Icons = new List<bool>();   // per ogni voce del sottomenu: ha un'icona?
     public static List<string> TopItems = new List<string>();
     public static string Info = "";
 
@@ -206,6 +207,13 @@ public static class ExplorerMenu {
         } finally {
             Marshal.FreeHGlobal(info.TypeData);
         }
+    }
+
+    static bool HasIcon(IntPtr menu, int position) {
+        var info = new MenuItemInfo();
+        info.Size = Marshal.SizeOf(typeof(MenuItemInfo));
+        info.Mask = 0x80;   // MIIM_BITMAP
+        return GetMenuItemInfo(menu, (uint)position, true, ref info) && info.Bitmap != IntPtr.Zero;
     }
 
     static uint Id(IntPtr menu, int position, out IntPtr subMenu) {
@@ -271,6 +279,7 @@ public static class ExplorerMenu {
     public static List<string> Submenu(string[] paths, string parent, string click) {
         Invoked = false;
         Info = "";
+        Icons = new List<bool>();
         TopItems = new List<string>();
         var pidls = new List<IntPtr>();
         IContextMenu menu = null;
@@ -302,6 +311,7 @@ public static class ExplorerMenu {
                 for (int j = 0; j < n; j++) {
                     string itemText = Text(sub, j);
                     items.Add(itemText);
+                    Icons.Add(HasIcon(sub, j));
                     if (!string.IsNullOrEmpty(click) && !Invoked && itemText.StartsWith(click)) {
                         IntPtr ignored;
                         uint id = Id(sub, j, out ignored);

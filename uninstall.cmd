@@ -9,6 +9,7 @@ if exist "%DEST%\SendToUnity.exe" start "" /wait "%DEST%\SendToUnity.exe" --unin
 rem pulizia diretta, nel caso il programma non ci sia piu'
 reg delete "HKCU\Software\Classes\*\shell\SendToUnity" /f >nul 2>&1
 reg delete "HKCU\Software\Classes\Directory\shell\SendToUnity" /f >nul 2>&1
+reg delete "HKCU\Software\Classes\CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}" /f >nul 2>&1
 del "%APPDATA%\Microsoft\Windows\SendTo\Progetto Unity.lnk" >nul 2>&1
 rmdir /s /q "%DEST%" >nul 2>&1
 
