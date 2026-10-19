@@ -644,7 +644,7 @@ try {
     $items = Menu @($metaB, "$metaB.meta") 'Gioco'
     [void](Wait-Idle)
     Check ((Read-File (Join-Path $dest 'meta_b.png.meta')) -eq 'GUID-MB') 'file e .meta selezionati insieme: arrivano entrambi'
-    Check ((Log-Since $mark) -match 'notifica: 1 copiati') 'il .meta non conta come file inviato'
+    Check ((Log-Since $mark) -match 'notification: 1 copied') 'il .meta non conta come file inviato'
 
     $kit = Join-Path $p3 'Assets\Kit'
     New-File (Join-Path $kit 'k1.png') 'K1' | Out-Null
