@@ -444,7 +444,7 @@ try {
     $proc = Start-Tool @('--to', (Q $p1), (Q (Join-Path $dest 'roccia_albedo.png')))
     $text = Toast-Text
     [void](Wait-Exit $proc)
-    Check ($text -like 'I file sono gi* in questa cartella*') "file gia' nella cartella: lo dice la notifica ($text)"
+    Check ($text -like 'Il file * gi* in questa cartella*') "file gia' nella cartella: lo dice la notifica ($text)"
 
     # Unity sta importando il file e lo tiene bloccato: il programma aspetta e riprova
     [IO.File]::WriteAllText($albedo, 'A4')
