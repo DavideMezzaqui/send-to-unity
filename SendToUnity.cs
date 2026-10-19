@@ -1,8 +1,8 @@
-﻿// Invia a Unity: dal tasto destro di Esplora risorse copia file e cartelle in un progetto Unity.
+﻿// Send to Unity: copies files and folders into a Unity project from the File Explorer right-click menu.
 //
-// install.cmd compila questo file con il compilatore C# incluso in Windows (.NET Framework 4),
-// quindi il codice deve restare compatibile con C# 5: niente $"...", ?., nameof, out var,
-// tuple e membri con =>.
+// install.cmd compiles this file with the C# compiler included in Windows (.NET Framework 4),
+// so the code must stay compatible with C# 5: no $"...", ?., nameof, out var,
+// tuples or => members.
 
 using System;
 using System.Collections.Generic;
@@ -27,12 +27,13 @@ namespace SendToUnity
 {
     static class App
     {
-        public const string Name = "Invia a Unity";
+        public const string Name = "Send to Unity";
+        public const string MenuTitle = "Send to &Unity";
 
         public static readonly string Dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SendToUnity");
 
-        // Dentro Esplora risorse gira la DLL del menu, che sta nella stessa cartella del programma
+        // Inside File Explorer the menu DLL runs, and it sits in the same folder as the program
         public static string ExePath
         {
             get
@@ -43,15 +44,15 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ avvio
+    // ------------------------------------------------------------------ startup
 
     static class Program
     {
         [STAThread]
         static int Main(string[] args)
         {
-            // Explorer avvia l'istanza per il file successivo solo quando questa risulta
-            // "pronta all'input": lo segnalo subito, così con tanti file non ci sono pause
+            // Explorer starts the instance for the next file only once this one reports
+            // "ready for input": signal it right away, so there are no pauses with many files
             Native.SignalIdle();
             try
             {
@@ -59,8 +60,8 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("ERRORE " + ex);
-                Ui.Error("Qualcosa è andato storto:\n" + ex.Message);
+                Log.Write("ERROR " + ex);
+                Ui.Error("Something went wrong:\n" + ex.Message);
                 return 1;
             }
         }
@@ -88,7 +89,7 @@ namespace SendToUnity
                     return 0;
             }
 
-            // --to <progetto> = clic sul nome di un progetto nel menu; --pick = "Scegli progetto e cartella..."
+            // --to <project> = click on a project name in the menu; --pick = "Choose project and folder..."
             string project = null;
             if (command == "--to" && list.Count >= 2)
             {
@@ -100,7 +101,7 @@ namespace SendToUnity
                 list.RemoveAt(0);
             }
 
-            // --list <file> = elenco scritto dal menu (un percorso per riga): niente limiti di lunghezza
+            // --list <file> = list written by the menu (one path per line): no length limits
             int at = list.IndexOf("--list");
             if (at >= 0 && at + 1 < list.Count)
             {
@@ -112,9 +113,9 @@ namespace SendToUnity
             var files = list.Where(f => f.Trim().Length > 0).ToList();
             if (files.Count == 0)
             {
-                Ui.Info("Invia a Unity si usa dal tasto destro: seleziona file o cartelle in Esplora risorse, " +
-                        "poi tasto destro > Invia a Unity.\n\nSu Windows 11, se non la vedi subito, è sotto " +
-                        "\"Mostra altre opzioni\" (oppure Maiusc + tasto destro).");
+                Ui.Info("Send to Unity is used from the right-click menu: select files or folders in File Explorer, " +
+                        "then right-click > Send to Unity.\n\nOn Windows 11, if you don't see it right away, it's under " +
+                        "\"Show more options\" (or Shift + right-click).");
                 return 0;
             }
 
@@ -123,11 +124,11 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ una sola istanza
-    // Explorer avvia il programma una volta per ogni file selezionato. La prima istanza
-    // (quella che ottiene il mutex) fa il lavoro; le altre le passano i loro file con una
-    // named pipe e si chiudono subito. Un file viene confermato solo quando la prima istanza
-    // l'ha preso in carico: se non arriva conferma, l'istanza riprova o diventa lei la prima.
+    // ------------------------------------------------------------------ single instance
+    // Explorer starts the program once for every selected file. The first instance
+    // (the one that gets the mutex) does the work; the others hand it their files over a
+    // named pipe and exit right away. A file is acknowledged only once the first instance
+    // has taken it over: if no acknowledgment arrives, the instance retries or becomes the first itself.
 
     static class SingleInstance
     {
@@ -137,7 +138,7 @@ namespace SendToUnity
             string pipeName = "SendToUnity_" + Process.GetCurrentProcess().SessionId + "_" + id;
             using (var mutex = new Mutex(false, @"Local\SendToUnity_" + id))
             {
-                // chi arriva mentre la prima istanza sta ancora copiando aspetta che finisca
+                // whoever arrives while the first instance is still copying waits for it to finish
                 DateTime giveUp = DateTime.UtcNow.AddMinutes(30);
                 int wait = 0;
                 while (true)
@@ -150,7 +151,7 @@ namespace SendToUnity
                     {
                         try
                         {
-                            Log.Write("leader " + key + " con " + files.Count + " elementi");
+                            Log.Write("leader " + key + " with " + files.Count + " items");
                             var collector = new Collector(pipeName, files);
                             collector.Start();
                             return lead(collector);
@@ -163,8 +164,8 @@ namespace SendToUnity
 
                     if (Collector.TrySend(pipeName, files)) return 0;
                     if (DateTime.UtcNow > giveUp)
-                        throw new Exception("Un altro invio verso lo stesso progetto è ancora in corso. Riprova tra poco.");
-                    wait = 500;   // da qui si aspetta il mutex invece di riprovare a vuoto
+                        throw new Exception("Another send to the same project is still in progress. Try again shortly.");
+                    wait = 500;   // from here on, wait for the mutex instead of retrying in vain
                 }
             }
         }
@@ -183,7 +184,7 @@ namespace SendToUnity
 
     class Collector
     {
-        const string End = "<FINE>";
+        const string End = "<END>";
 
         readonly object sync = new object();
         readonly List<string> pending = new List<string>();
@@ -243,11 +244,11 @@ namespace SendToUnity
                     var lines = new List<string>();
                     string line;
                     while ((line = reader.ReadLine()) != null && line != End) lines.Add(line);
-                    if (line == null) return;   // il mittente si è interrotto: riproverà
+                    if (line == null) return;   // the sender was interrupted: it will retry
 
                     lock (sync)
                     {
-                        if (closed) return;      // nessuna conferma: il mittente aspetterà la prossima istanza
+                        if (closed) return;      // no acknowledgment: the sender will wait for the next instance
                         pending.AddRange(lines);
                         lastArrival = DateTime.UtcNow;
                     }
@@ -255,7 +256,7 @@ namespace SendToUnity
                     writer.WriteLine("OK");
                     writer.Flush();
                     pipe.WaitForPipeDrain();
-                    Log.Write("ricevuti " + lines.Count + " elementi da un'altra istanza");
+                    Log.Write("received " + lines.Count + " items from another instance");
 
                     var handler = Arrived;
                     if (handler != null) handler();
@@ -289,7 +290,7 @@ namespace SendToUnity
             }
         }
 
-        // Prende i file arrivati finora
+        // Takes the files that arrived so far
         public List<string> Take()
         {
             lock (sync)
@@ -305,7 +306,7 @@ namespace SendToUnity
             get { lock (sync) return pending.Count > 0; }
         }
 
-        // Smette di confermare: chi arriva dopo aspetta la fine di questa istanza e riparte da sé
+        // Stops acknowledging: whoever arrives later waits for this instance to end and starts over on its own
         public List<string> Close()
         {
             lock (sync)
@@ -317,7 +318,7 @@ namespace SendToUnity
             }
         }
 
-        // Aspetta che le altre istanze abbiano finito di arrivare
+        // Waits until the other instances have finished arriving
         public void WaitQuiet(int quietMs, int maxMs)
         {
             DateTime started = DateTime.UtcNow;
@@ -327,13 +328,13 @@ namespace SendToUnity
                 lock (sync) last = lastArrival;
                 DateTime now = DateTime.UtcNow;
                 if ((now - last).TotalMilliseconds >= quietMs || (now - started).TotalMilliseconds >= maxMs) return;
-                Native.SignalIdle();   // vedi Program.Main
+                Native.SignalIdle();   // see Program.Main
                 Thread.Sleep(20);
             }
         }
     }
 
-    // ------------------------------------------------------------------ flusso principale
+    // ------------------------------------------------------------------ main flow
 
     static class Sender
     {
@@ -348,7 +349,7 @@ namespace SendToUnity
                 if (!Projects.IsUnityProject(project))
                 {
                     collector.Close();
-                    Ui.Error("Questo progetto non esiste più (o non è un progetto Unity):\n" + project);
+                    Ui.Error("This project no longer exists (or is not a Unity project):\n" + project);
                     return 1;
                 }
                 string folder = settings.FolderFor(project);
@@ -359,7 +360,7 @@ namespace SendToUnity
             return WithDialog(project, collector, settings);
         }
 
-        // Progetto e cartella già noti: nessuna finestra, solo la notifica finale
+        // Project and folder already known: no window, only the final notification
         static int Quick(string project, string folder, Collector collector)
         {
             int status = 0;
@@ -367,7 +368,7 @@ namespace SendToUnity
             var files = collector.Take();
             while (files.Count > 0)
             {
-                // un giro per ogni invio, con il suo conteggio e la sua domanda sui file già presenti
+                // one round per send, with its own count and its own question about files already there
                 if (job == null) job = new CopyJob(project, folder, false);
                 bool cancelled = false;
                 do
@@ -377,14 +378,14 @@ namespace SendToUnity
                         cancelled = true;
                         break;
                     }
-                    // con molti file Explorer avvia le istanze a ondate (a volte con pause): si copia finché ne arrivano
+                    // with many files Explorer starts the instances in waves (sometimes with pauses): keep copying while they arrive
                     collector.WaitQuiet(900, 3000);
                     files = collector.Take();
                 }
                 while (files.Count > 0);
 
-                // annullato prima di inviare qualcosa: niente notifica, ma gli invii arrivati intanto
-                // (da un'altra finestra) non vanno persi e ripartono con la loro domanda
+                // canceled before sending anything: no notification, but sends that arrived meanwhile
+                // (from another window) must not be lost and start over with their own question
                 if (cancelled && job.Result.Copied == 0 && job.Result.Errors.Count == 0)
                 {
                     files = collector.Take();
@@ -393,16 +394,16 @@ namespace SendToUnity
                     continue;
                 }
 
-                // tutto copiato: ora Unity in primo piano, così importa tutto in una volta
+                // everything copied: now bring Unity to the front, so it imports everything at once
                 Projects.FocusEditor(project);
-                Log.Write("notifica: " + job.Result.Copied + " copiati, " + job.Result.Skipped + " saltati");
+                Log.Write("notification: " + job.Result.Copied + " copied, " + job.Result.Skipped + " skipped");
                 if (job.Result.Errors.Count > 0) status = 1;
-                // un nuovo invio mentre la notifica è visibile la chiude e viene copiato subito
+                // a new send while the notification is visible closes it and is copied right away
                 var shown = Stopwatch.StartNew();
                 Ui.ShowResult(job.Result, () => collector.HasPending);
                 files = collector.Take();
                 if (files.Count == 0) files = collector.Close();
-                // file arrivati appena dopo: sono ancora lo stesso invio (Explorer in ritardo), il conteggio continua
+                // files that arrived just after: still the same send (Explorer running late), the count continues
                 if (shown.ElapsedMilliseconds > 1500) job = null;
             }
             Remember(project, folder);
@@ -412,7 +413,7 @@ namespace SendToUnity
         static int WithDialog(string preselect, Collector collector, Settings settings)
         {
             var projects = Projects.Known(settings, true);
-            foreach (var p in projects) Log.Write("progetto " + p.Path + (p.Open ? " (aperto)" : ""));
+            foreach (var p in projects) Log.Write("project " + p.Path + (p.Open ? " (open)" : ""));
 
             using (var dialog = new SendDialog(collector.Take(), projects, settings, preselect, collector))
             {
@@ -441,12 +442,12 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("preferenze non salvate: " + ex.Message);
+                Log.Write("preferences not saved: " + ex.Message);
             }
         }
     }
 
-    // ------------------------------------------------------------------ copia
+    // ------------------------------------------------------------------ copy
 
     class Result
     {
@@ -454,17 +455,17 @@ namespace SendToUnity
         public string Folder;
         public string Destination;
         public bool Moved;
-        public int Copied;          // file inviati (i .meta che li accompagnano non contano)
-        public int Skipped;         // già presenti e lasciati com'erano
-        public int AlreadyThere;    // erano già proprio in quella cartella
-        public bool AccessDenied;   // Windows ha negato la scrittura
-        public string FirstTarget;  // primo file arrivato: viene selezionato aprendo la cartella
+        public int Copied;          // files sent (the .meta files that go with them don't count)
+        public int Skipped;         // already there and left as they were
+        public int AlreadyThere;    // were already in that very folder
+        public bool AccessDenied;   // Windows denied writing
+        public string FirstTarget;  // first file delivered: it gets selected when opening the folder
         public readonly List<string> Errors = new List<string>();
     }
 
     class CopyJob
     {
-        // File di sistema che non devono finire negli Assets quando si copia una cartella
+        // System files that must not end up in Assets when copying a folder
         static readonly string[] JunkFiles = { "Thumbs.db", "desktop.ini", ".DS_Store" };
 
         class Step
@@ -472,9 +473,9 @@ namespace SendToUnity
             public string Source;
             public string Target;
             public bool Conflict;
-            public bool Duplicate;   // stesso nome di un altro file dello stesso invio
-            public bool IsMeta;   // .meta di Unity che accompagna un file o una cartella
-            public Step Owner;    // il file che il .meta accompagna (null per le cartelle)
+            public bool Duplicate;   // same name as another file in the same send
+            public bool IsMeta;   // Unity .meta that goes with a file or a folder
+            public Step Owner;    // the file the .meta goes with (null for folders)
             public bool Done;
         }
 
@@ -482,8 +483,8 @@ namespace SendToUnity
         readonly string project;
         readonly string destination;
         readonly bool move;
-        bool? overwrite;   // chiesto una volta sola per invio
-        // cartelle d'origine e dove finiscono: spostando, servono per portare i .meta delle cartelle
+        bool? overwrite;   // asked only once per send
+        // source folders and where they end up: when moving, needed to carry the folders' .meta files
         readonly Dictionary<string, string> folderTargets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         public CopyJob(string project, string folder, bool move)
@@ -494,7 +495,7 @@ namespace SendToUnity
             Result = new Result { Project = project, Folder = folder, Destination = destination, Moved = move };
         }
 
-        // false se l'utente annulla alla domanda sui file già presenti
+        // false if the user cancels at the question about files already there
         public bool Run(List<string> sources)
         {
             var folders = new List<string>();
@@ -507,7 +508,7 @@ namespace SendToUnity
                 var answer = Ui.AskOverwrite(conflicts, Result);
                 if (answer == DialogResult.Cancel)
                 {
-                    Log.Write("invio annullato dall'utente");
+                    Log.Write("send canceled by the user");
                     return false;
                 }
                 overwrite = answer == DialogResult.Yes;
@@ -516,9 +517,9 @@ namespace SendToUnity
             try { Directory.CreateDirectory(destination); }
             catch (Exception ex)
             {
-                // per esempio "Accesso controllato alle cartelle": il messaggio finale spiega cosa fare
+                // for example "Controlled folder access": the final message explains what to do
                 AddError(Result.Folder, ex);
-                Log.Write("cartella " + destination + " non creata: " + ex.Message);
+                Log.Write("folder " + destination + " not created: " + ex.Message);
                 return true;
             }
             foreach (string folder in folders)
@@ -534,8 +535,8 @@ namespace SendToUnity
                     progress.Step();
                     if (step.Duplicate)
                     {
-                        // sostituendo, uno dei due andrebbe perso (spostando, per sempre)
-                        Result.Errors.Add(Path.GetFileName(step.Source) + ": c'è un altro file con lo stesso nome in questo invio");
+                        // replacing would lose one of the two (forever, when moving)
+                        Result.Errors.Add(Path.GetFileName(step.Source) + ": there is another file with the same name in this send");
                         continue;
                     }
                     if (step.Conflict && overwrite != true)
@@ -553,18 +554,18 @@ namespace SendToUnity
                     catch (Exception ex)
                     {
                         AddError(Path.GetFileName(step.Source), ex);
-                        Log.Write("errore su " + step.Source + ": " + ex.Message);
+                        Log.Write("error on " + step.Source + ": " + ex.Message);
                     }
                 }
             }
-            // poi i .meta, che seguono solo i file arrivati davvero
+            // then the .meta files, which follow only the files actually delivered
             foreach (var step in steps.Where(s => s.IsMeta))
             {
-                if (step.Owner != null && !step.Owner.Done) continue;   // file saltato: il .meta resta con lui
+                if (step.Owner != null && !step.Owner.Done) continue;   // file skipped: the .meta stays with it
                 try { TransferMeta(step); }
                 catch (Exception ex)
                 {
-                    // senza il suo .meta Unity dà al file un GUID nuovo e i riferimenti si rompono: va detto
+                    // without its .meta Unity gives the file a new GUID and references break: this must be reported
                     AddError(Path.GetFileName(step.Source), ex);
                     Log.Write("meta " + step.Source + ": " + ex.Message);
                 }
@@ -573,7 +574,7 @@ namespace SendToUnity
             {
                 foreach (string root in movedRoots) Cleanup(root);
             }
-            Log.Write("copiati " + Result.Copied + ", saltati " + Result.Skipped + ", errori " + Result.Errors.Count + " in " + destination);
+            Log.Write("copied " + Result.Copied + ", skipped " + Result.Skipped + ", errors " + Result.Errors.Count + " in " + destination);
             return true;
         }
 
@@ -589,7 +590,7 @@ namespace SendToUnity
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var assets = new Dictionary<string, Step>(StringComparer.OrdinalIgnoreCase);
-            var metas = new List<KeyValuePair<string, string>>();   // .meta da valutare: origine, destinazione
+            var metas = new List<KeyValuePair<string, string>>();   // .meta files to evaluate: source, destination
 
             var normalized = new List<string>();
             foreach (string raw in sources)
@@ -597,23 +598,23 @@ namespace SendToUnity
                 try { normalized.Add(Paths.Normalize(raw)); }
                 catch (Exception)
                 {
-                    Result.Errors.Add(raw + ": percorso non valido");
+                    Result.Errors.Add(raw + ": invalid path");
                 }
             }
-            // un file che sta dentro una cartella dello stesso invio viaggia già con la cartella
+            // a file inside a folder of the same send already travels with the folder
             var selectedFolders = normalized.Where(Directory.Exists).ToList();
 
             foreach (string source in normalized)
             {
                 if (!seen.Add(source)) continue;
                 if (selectedFolders.Any(f => !Paths.Same(f, source) && Paths.IsInside(source, f))) continue;
-                // i .meta non si mandano da soli: viaggiano con il loro file (vedi sotto)
+                // .meta files are not sent on their own: they travel with their file (see below)
                 if (IsMeta(source) && File.Exists(source)) continue;
 
                 string name = Path.GetFileName(source);
                 if (name.Length == 0)
                 {
-                    Result.Errors.Add(source + ": un disco intero non si può inviare");
+                    Result.Errors.Add(source + ": a whole drive can't be sent");
                     continue;
                 }
                 string target = Path.Combine(destination, name);
@@ -627,7 +628,7 @@ namespace SendToUnity
                     }
                     if (Paths.IsInside(destination, source))
                     {
-                        Result.Errors.Add(name + ": non posso copiare una cartella dentro se stessa");
+                        Result.Errors.Add(name + ": can't copy a folder into itself");
                         continue;
                     }
                     if (move) movedRoots.Add(source);
@@ -656,14 +657,14 @@ namespace SendToUnity
                 else
                 {
                     Result.Errors.Add(name + (InsideArchive(source)
-                        ? ": è dentro un archivio (zip), va estratto prima"
-                        : ": non trovato"));
+                        ? ": it's inside an archive (zip), extract it first"
+                        : ": not found"));
                 }
             }
 
-            // .meta di Unity: spostando seguono sempre il loro file, così Unity non perde i riferimenti;
-            // copiando si portano solo da un altro progetto (dentro lo stesso darebbero GUID doppi).
-            // Un .meta che il progetto ha già non viene mai sostituito (vedi TransferMeta).
+            // Unity .meta files: when moving they always follow their file, so Unity doesn't lose references;
+            // when copying they are brought only from another project (within the same one they would duplicate GUIDs).
+            // A .meta the project already has is never replaced (see TransferMeta).
             var seenMeta = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var meta in metas)
             {
@@ -675,10 +676,10 @@ namespace SendToUnity
                 {
                     if (Directory.Exists(ownerPath))
                     {
-                        // .meta di una cartella: spostando ci pensa Cleanup, che sa se la cartella è stata svuotata
+                        // .meta of a folder: when moving, Cleanup handles it, since it knows whether the folder was emptied
                         if (move) continue;
                     }
-                    else if (!move) continue;   // .meta orfano: copiando resta dov'è, spostando segue la sua cartella
+                    else if (!move) continue;   // orphan .meta: when copying it stays where it is, when moving it follows its folder
                     owner = null;
                 }
                 steps.Add(new Step { Source = meta.Key, Target = meta.Value, IsMeta = true, Owner = owner });
@@ -686,7 +687,7 @@ namespace SendToUnity
             return steps;
         }
 
-        // Elenca i file di una cartella e prepara le sottocartelle (anche vuote) nella destinazione
+        // Lists the files of a folder and prepares the subfolders (even empty ones) in the destination
         void Walk(string folder, List<string> files, List<string> folders, string target)
         {
             try
@@ -711,8 +712,8 @@ namespace SendToUnity
             }
         }
 
-        // .git, .svn e simili, i resti degli zip fatti su Mac, e i collegamenti a cartelle (junction):
-        // non sono asset, e seguendo un collegamento si toccherebbero file che stanno altrove
+        // .git, .svn and the like, leftovers from zips made on a Mac, and folder links (junctions):
+        // they are not assets, and following a link would touch files that live elsewhere
         static bool Skipped(string folder)
         {
             string name = Path.GetFileName(folder);
@@ -723,7 +724,7 @@ namespace SendToUnity
 
         static bool IsJunk(string name)
         {
-            if (IsMeta(name)) name = name.Substring(0, name.Length - ".meta".Length);   // anche il loro .meta
+            if (IsMeta(name)) name = name.Substring(0, name.Length - ".meta".Length);   // their .meta too
             return name.StartsWith("._") || JunkFiles.Contains(name, StringComparer.OrdinalIgnoreCase);
         }
 
@@ -732,7 +733,7 @@ namespace SendToUnity
             return path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase);
         }
 
-        // Explorer mostra il contenuto degli zip come cartelle, ma quei file sul disco non esistono
+        // Explorer shows the contents of zips as folders, but those files don't exist on disk
         static bool InsideArchive(string path)
         {
             try
@@ -749,7 +750,7 @@ namespace SendToUnity
 
         static Step AddStep(List<Step> steps, HashSet<string> targets, string source, string target)
         {
-            // due file dello stesso invio con lo stesso nome finirebbero uno sull'altro: il secondo non va
+            // two files of the same send with the same name would land on top of each other: the second one doesn't go
             bool duplicate = !targets.Add(target);
             bool conflict = duplicate || File.Exists(target) || Directory.Exists(target);
             var step = new Step { Source = source, Target = target, Conflict = conflict, Duplicate = duplicate };
@@ -761,9 +762,9 @@ namespace SendToUnity
         {
             Directory.CreateDirectory(Path.GetDirectoryName(step.Target));
             if (Directory.Exists(step.Target))
-                throw new IOException("nel progetto c'è già una cartella con questo nome");
+                throw new IOException("the project already has a folder with this name");
             if (File.Exists(step.Target) && (File.GetAttributes(step.Target) & FileAttributes.ReadOnly) != 0)
-                throw new IOException("il file nel progetto è in sola lettura (serve il checkout?)");
+                throw new IOException("the file in the project is read-only (does it need a checkout?)");
 
             if (!move)
             {
@@ -771,7 +772,7 @@ namespace SendToUnity
             }
             else if (File.Exists(step.Target))
             {
-                // prima la copia e poi via l'originale: se qualcosa va storto non si perde niente
+                // copy first and then remove the original: if something goes wrong nothing is lost
                 File.Copy(step.Source, step.Target, true);
                 Delete(step.Source);
             }
@@ -782,13 +783,13 @@ namespace SendToUnity
             ClearReadOnly(step.Target);
         }
 
-        // Il .meta segue il suo file ma non sostituisce mai quello che il progetto ha già:
-        // lì ci sono il GUID e le impostazioni a cui Unity collega i riferimenti
+        // The .meta follows its file but never replaces the one the project already has:
+        // it holds the GUID and the settings Unity links references to
         void TransferMeta(Step step)
         {
             if (File.Exists(step.Target))
             {
-                if (move) Retry(() => Delete(step.Source));   // il file è stato spostato: il vecchio .meta non serve più
+                if (move) Retry(() => Delete(step.Source));   // the file was moved: the old .meta is no longer needed
                 return;
             }
             Directory.CreateDirectory(Path.GetDirectoryName(step.Target));
@@ -800,7 +801,7 @@ namespace SendToUnity
             ClearReadOnly(step.Target);
         }
 
-        // Unity tiene aperti i file mentre li importa (con file grandi anche qualche secondo): si riprova fino a 5 s
+        // Unity keeps files open while importing them (a few seconds for large files): retry for up to 5 s
         static void Retry(Action action)
         {
             for (int attempt = 1; ; attempt++)
@@ -813,13 +814,13 @@ namespace SendToUnity
                 catch (IOException ex)
                 {
                     int code = ex.HResult & 0xFFFF;
-                    if ((code != 32 && code != 33) || attempt >= 25) throw;   // 32, 33 = file in uso
+                    if ((code != 32 && code != 33) || attempt >= 25) throw;   // 32, 33 = file in use
                     Thread.Sleep(200);
                 }
             }
         }
 
-        // una copia di un file in sola lettura resterebbe bloccata anche dentro Unity
+        // a copy of a read-only file would stay locked inside Unity too
         static void ClearReadOnly(string file)
         {
             var attributes = File.GetAttributes(file);
@@ -827,15 +828,15 @@ namespace SendToUnity
                 File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
         }
 
-        // spostando, l'originale va via anche se è in sola lettura (come fa Esplora risorse)
+        // when moving, the original goes away even if it's read-only (as File Explorer does)
         static void Delete(string file)
         {
             ClearReadOnly(file);
             File.Delete(file);
         }
 
-        // Dopo uno spostamento toglie dall'origine le cartelle rimaste vuote (o con soli file di sistema),
-        // dal basso verso l'alto, e porta il loro .meta accanto alla cartella di destinazione
+        // After a move, removes from the source the folders left empty (or with only system files),
+        // bottom-up, and brings their .meta next to the destination folder
         void Cleanup(string folder)
         {
             try
@@ -845,7 +846,7 @@ namespace SendToUnity
                     if (!Skipped(sub)) Cleanup(sub);
                 }
                 var left = Directory.GetFileSystemEntries(folder);
-                if (!left.All(f => File.Exists(f) && IsJunk(Path.GetFileName(f)))) return;   // ci sono file saltati
+                if (!left.All(f => File.Exists(f) && IsJunk(Path.GetFileName(f)))) return;   // there are skipped files
                 foreach (string f in left) Delete(f);
                 Directory.Delete(folder);
 
@@ -857,12 +858,12 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("pulizia di " + folder + ": " + ex.Message);
+                Log.Write("cleanup of " + folder + ": " + ex.Message);
             }
         }
     }
 
-    // Notifica "Copia in corso" su un thread a parte: compare solo se la copia dura più di un attimo
+    // "Copying" notification on a separate thread: it appears only if the copy takes more than a moment
     class Progress : IDisposable
     {
         readonly object sync = new object();
@@ -890,7 +891,7 @@ namespace SendToUnity
 
         public string Text
         {
-            get { return (move ? "Spostamento in corso: " : "Copia in corso: ") + Math.Min(Thread.VolatileRead(ref done), total) + " di " + total; }
+            get { return (move ? "Moving: " : "Copying: ") + Math.Min(Thread.VolatileRead(ref done), total) + " of " + total; }
         }
 
         public void Step()
@@ -918,7 +919,7 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("avanzamento: " + ex.Message);
+                Log.Write("progress: " + ex.Message);
             }
         }
 
@@ -931,11 +932,11 @@ namespace SendToUnity
                 running = thread;
             }
             delay.Dispose();
-            if (running != null) running.Join(2000);   // la notifica si chiude da sola appena vede che è finita
+            if (running != null) running.Join(2000);   // the notification closes by itself as soon as it sees it's finished
         }
     }
 
-    // ------------------------------------------------------------------ progetti Unity
+    // ------------------------------------------------------------------ Unity projects
 
     public class ProjectInfo
     {
@@ -944,7 +945,7 @@ namespace SendToUnity
         public bool Open;
         public long HubTime;
         public long LastUsed;
-        public string Hint;   // cartella che lo contiene, solo se c'è un altro progetto con lo stesso nome
+        public string Hint;   // folder that contains it, only if there is another project with the same name
 
         public string DisplayName
         {
@@ -953,7 +954,7 @@ namespace SendToUnity
 
         public override string ToString()
         {
-            return Open ? DisplayName + "   (aperto in Unity)" : DisplayName;
+            return Open ? DisplayName + "   (open in Unity)" : DisplayName;
         }
     }
 
@@ -972,7 +973,7 @@ namespace SendToUnity
             }
         }
 
-        // Progetti di Unity Hub, recenti dell'editor, aggiunti a mano e già usati con questo programma
+        // Projects from Unity Hub, the editor's recent ones, ones added by hand and ones already used with this program
         public static List<ProjectInfo> Known(Settings settings, bool checkOpen)
         {
             var found = new Dictionary<string, ProjectInfo>(StringComparer.OrdinalIgnoreCase);
@@ -996,7 +997,7 @@ namespace SendToUnity
                 .ToList();
         }
 
-        // Due progetti con lo stesso nome: accanto al nome compare la cartella che li contiene
+        // Two projects with the same name: the folder that contains them appears next to the name
         static void MarkDuplicates(IEnumerable<ProjectInfo> projects)
         {
             foreach (var group in projects.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
@@ -1007,7 +1008,7 @@ namespace SendToUnity
                     string name = Path.GetFileName(parent);
                     p.Hint = string.IsNullOrEmpty(name) ? parent : name;
                 }
-                // se anche le cartelle che li contengono si chiamano uguale, si mostra il percorso intero
+                // if the folders that contain them also have the same name, the full path is shown
                 if (group.Select(p => p.Hint).Distinct(StringComparer.OrdinalIgnoreCase).Count() < group.Count())
                 {
                     foreach (var p in group) p.Hint = Path.GetDirectoryName(p.Path) ?? p.Path;
@@ -1028,7 +1029,7 @@ namespace SendToUnity
                 info.HubTime = Math.Max(info.HubTime, hubTime);
                 return;
             }
-            // un disco di rete scollegato bloccherebbe il controllo per decine di secondi
+            // a disconnected network drive would block the check for tens of seconds
             if (!Paths.IsNetwork(full) && !IsUnityProject(full)) return;
             string name = Path.GetFileName(full);
             found[full] = new ProjectInfo { Path = full, Name = name.Length > 0 ? name : full, HubTime = hubTime };
@@ -1069,12 +1070,12 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("elenco di Unity Hub illeggibile: " + ex.Message);
+                Log.Write("Unity Hub list unreadable: " + ex.Message);
             }
             return list;
         }
 
-        // L'editor salva i progetti recenti nel registro (stringhe UTF-8)
+        // The editor saves recent projects in the registry (UTF-8 strings)
         static List<string> FromEditor()
         {
             var list = new List<string>();
@@ -1103,7 +1104,7 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("progetti recenti illeggibili: " + ex.Message);
+                Log.Write("recent projects unreadable: " + ex.Message);
             }
             return list;
         }
@@ -1113,7 +1114,7 @@ namespace SendToUnity
             return Path.Combine(project, @"Temp\UnityLockfile");
         }
 
-        // Unity tiene aperto Temp\UnityLockfile finché il progetto è aperto
+        // Unity keeps Temp\UnityLockfile open while the project is open
         public static bool IsOpen(string project)
         {
             if (Paths.IsNetwork(project)) return false;
@@ -1136,7 +1137,7 @@ namespace SendToUnity
             }
         }
 
-        // Porta in primo piano l'editor che ha aperto il progetto: così Unity importa subito i file
+        // Brings to the front the editor that has the project open: this way Unity imports the files right away
         public static void FocusEditor(string project)
         {
             try
@@ -1160,7 +1161,7 @@ namespace SendToUnity
                 }
                 if (window == IntPtr.Zero)
                 {
-                    // ripiego: il titolo della finestra di Unity inizia con il nome del progetto
+                    // fallback: the Unity window title starts with the project name
                     string prefix = Path.GetFileName(project) + " - ";
                     foreach (var process in Process.GetProcessesByName("Unity"))
                     {
@@ -1178,19 +1179,19 @@ namespace SendToUnity
                 }
                 if (window == IntPtr.Zero)
                 {
-                    Log.Write("finestra di Unity non trovata per " + project);
+                    Log.Write("Unity window not found for " + project);
                     return;
                 }
-                Log.Write("Unity in primo piano: " + (Native.BringToFront(window) ? "si" : "no"));
+                Log.Write("Unity brought to front: " + (Native.BringToFront(window) ? "yes" : "no"));
             }
             catch (Exception ex)
             {
-                Log.Write("primo piano non riuscito: " + ex.Message);
+                Log.Write("bring to front failed: " + ex.Message);
             }
         }
     }
 
-    // ------------------------------------------------------------------ cartelle dentro Assets
+    // ------------------------------------------------------------------ folders inside Assets
 
     static class Folders
     {
@@ -1200,7 +1201,7 @@ namespace SendToUnity
             "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
         };
 
-        // Restituisce la cartella ripulita (es. "Assets/Textures") oppure null, con il motivo in error
+        // Returns the cleaned-up folder (e.g. "Assets/Textures") or null, with the reason in error
         public static string Clean(string text, out string error)
         {
             error = null;
@@ -1212,7 +1213,7 @@ namespace SendToUnity
 
             if (!string.Equals(parts[0], "Assets", StringComparison.OrdinalIgnoreCase))
             {
-                error = "La cartella deve stare dentro Assets (per esempio Assets/Textures).";
+                error = "The folder must be inside Assets (for example Assets/Textures).";
                 return null;
             }
             parts[0] = "Assets";
@@ -1221,21 +1222,21 @@ namespace SendToUnity
             foreach (string part in parts.Skip(1))
             {
                 if (part == "." || part == "..")
-                    error = "Non usare . o .. nel percorso.";
+                    error = "Don't use . or .. in the path.";
                 else if (part.IndexOfAny(invalid) >= 0)
-                    error = "\"" + part + "\" contiene caratteri non ammessi nei nomi di cartella.";
+                    error = "\"" + part + "\" contains characters not allowed in folder names.";
                 else if (part.StartsWith(".") || part.EndsWith("~"))
-                    error = "Unity ignora le cartelle che iniziano con un punto o finiscono con ~ (\"" + part + "\").";
+                    error = "Unity ignores folders that start with a dot or end with ~ (\"" + part + "\").";
                 else if (part.EndsWith("."))
-                    error = "Un nome di cartella non può finire con un punto (\"" + part + "\").";
+                    error = "A folder name can't end with a dot (\"" + part + "\").";
                 else if (Reserved.Contains(part.Split('.')[0].ToUpperInvariant()))
-                    error = "\"" + part + "\" è un nome riservato da Windows.";
+                    error = "\"" + part + "\" is a name reserved by Windows.";
                 if (error != null) return null;
             }
             return string.Join("/", parts);
         }
 
-        // Sottocartelle esistenti di Assets, per il menu a tendina
+        // Existing subfolders of Assets, for the drop-down list
         public static List<string> Existing(string project)
         {
             const int maxDepth = 4;
@@ -1254,7 +1255,7 @@ namespace SendToUnity
                 foreach (string sub in subs)
                 {
                     string name = Path.GetFileName(sub);
-                    if (name.StartsWith(".") || name.EndsWith("~")) continue;   // Unity le ignora
+                    if (name.StartsWith(".") || name.EndsWith("~")) continue;   // Unity ignores them
                     result.Add(sub.Substring(skip).Replace('\\', '/'));
                     if (item.Value + 1 < maxDepth) queue.Enqueue(new KeyValuePair<string, int>(sub, item.Value + 1));
                 }
@@ -1264,7 +1265,7 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ impostazioni
+    // ------------------------------------------------------------------ settings
 
     public class ProjectPrefs
     {
@@ -1318,7 +1319,7 @@ namespace SendToUnity
             return Read(out settings) ? settings : new Settings();
         }
 
-        // false se il file c'è ma resta occupato: salvando ora si perderebbero le preferenze
+        // false if the file exists but stays busy: saving now would lose the preferences
         static bool Read(out Settings settings)
         {
             settings = new Settings();
@@ -1340,23 +1341,23 @@ namespace SendToUnity
                 }
                 catch (IOException ex)
                 {
-                    // di solito un altro invio lo sta salvando proprio ora: si riprova un attimo dopo
+                    // usually another send is saving it right now: retry a moment later
                     if (attempt >= 20)
                     {
-                        Log.Write("impostazioni illeggibili: " + ex.Message);
+                        Log.Write("settings unreadable: " + ex.Message);
                         return false;
                     }
                     Thread.Sleep(25);
                 }
                 catch (Exception ex)
                 {
-                    Log.Write("impostazioni rovinate, riparto da zero: " + ex.Message);
+                    Log.Write("settings corrupted, starting from scratch: " + ex.Message);
                     return true;
                 }
             }
         }
 
-        // Rilegge, modifica e salva sotto un mutex: due invii contemporanei non si cancellano a vicenda
+        // Rereads, changes and saves under a mutex: two simultaneous sends don't overwrite each other
         public static Settings Update(Action<Settings> change)
         {
             using (var mutex = new Mutex(false, @"Local\SendToUnity_settings"))
@@ -1367,7 +1368,7 @@ namespace SendToUnity
                 try
                 {
                     Settings settings;
-                    if (!Read(out settings)) throw new IOException("le impostazioni sono bloccate da un altro programma");
+                    if (!Read(out settings)) throw new IOException("the settings are locked by another program");
                     change(settings);
                     Directory.CreateDirectory(App.Dir);
                     string temp = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -1382,7 +1383,7 @@ namespace SendToUnity
                         }
                         catch (IOException)
                         {
-                            if (attempt >= 10) throw;   // qualcuno lo sta leggendo proprio ora
+                            if (attempt >= 10) throw;   // someone is reading it right now
                             Thread.Sleep(30);
                         }
                     }
@@ -1396,11 +1397,11 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ menu del tasto destro
-    // "Invia a Unity" è un comando di Esplora risorse (IExplorerCommand, più sotto). install.cmd
-    // compila questo stesso file anche come DLL, che Explorer carica e interroga ogni volta che
-    // apre il menu: l'elenco dei progetti è sempre aggiornato e quelli aperti hanno il pallino verde.
-    // Tutto è registrato per l'utente corrente, senza permessi di amministratore.
+    // ------------------------------------------------------------------ right-click menu
+    // "Send to Unity" is a File Explorer command (IExplorerCommand, further below). install.cmd
+    // also compiles this same file as a DLL, which Explorer loads and queries every time it
+    // opens the menu: the project list is always up to date and open projects have the green dot.
+    // Everything is registered for the current user, without administrator rights.
 
     static class ShellMenu
     {
@@ -1427,12 +1428,12 @@ namespace SendToUnity
             return File.Exists(hub) ? hub : null;
         }
 
-        // dll: la DLL appena compilata da install.cmd; null = la più recente nella cartella del programma.
-        // Ogni installazione ha un nome nuovo, perché Explorer tiene bloccata quella che ha già caricato.
+        // dll: the DLL just compiled by install.cmd; null = the most recent one in the program folder.
+        // Every installation has a new name, because Explorer keeps the one it already loaded locked.
         public static void Register(string dll)
         {
             if (dll == null) dll = Dlls().OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
-            if (dll == null || !File.Exists(dll)) throw new FileNotFoundException("Manca la DLL del menu: rifai install.cmd.");
+            if (dll == null || !File.Exists(dll)) throw new FileNotFoundException("The menu DLL is missing: run install.cmd again.");
             dll = Path.GetFullPath(dll);
 
             Registry.CurrentUser.DeleteSubKeyTree(ClassKey, false);
@@ -1454,10 +1455,10 @@ namespace SendToUnity
             foreach (string keyPath in Keys)
             {
                 Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
-                if (ModernMenu.Active) continue;   // la voce arriva dal pacchetto, in tutti e due i menu
+                if (ModernMenu.Active) continue;   // the item comes from the package, in both menus
                 using (var key = Registry.CurrentUser.CreateSubKey(keyPath))
                 {
-                    key.SetValue("MUIVerb", "&" + App.Name);   // tasto destro, poi I
+                    key.SetValue("MUIVerb", App.MenuTitle);   // right-click, then U
                     key.SetValue("ExplorerCommandHandler", ClassId);
                     if (hub != null) key.SetValue("Icon", hub + ",0");
                 }
@@ -1467,23 +1468,23 @@ namespace SendToUnity
             {
                 if (Paths.Same(old, dll)) continue;
                 try { File.Delete(old); }
-                catch (Exception) { Log.Write("DLL del menu ancora in uso, la tolgo la prossima volta: " + old); }
+                catch (Exception) { Log.Write("menu DLL still in use, removing it next time: " + old); }
             }
-            Log.Write("menu registrato: " + dll);
+            Log.Write("menu registered: " + dll);
         }
 
         public static void Remove()
         {
             foreach (string keyPath in Keys) Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
             Registry.CurrentUser.DeleteSubKeyTree(ClassKey, false);
-            // quella caricata da Explorer non si cancella ma si può spostare: la cartella resta pulita
+            // the one loaded by Explorer can't be deleted but can be moved: the folder stays clean
             foreach (string dll in Dlls())
             {
                 try { File.Delete(dll); }
                 catch (Exception)
                 {
                     try { File.Move(dll, Path.Combine(Path.GetTempPath(), Path.GetFileName(dll))); }
-                    catch (Exception ex) { Log.Write("DLL del menu non rimossa: " + ex.Message); }
+                    catch (Exception ex) { Log.Write("menu DLL not removed: " + ex.Message); }
                 }
             }
         }
@@ -1494,7 +1495,7 @@ namespace SendToUnity
             catch (Exception) { return new string[0]; }
         }
 
-        // Pallino verde dei progetti aperti, nelle misure che Windows usa nei menu ai vari DPI
+        // Green dot for open projects, in the sizes Windows uses in menus at the various DPIs
         public static void SaveOpenIcon()
         {
             int[] sizes = { 16, 20, 24, 32, 40, 48, 64 };
@@ -1523,7 +1524,7 @@ namespace SendToUnity
             }
         }
 
-        // Immagine di un'icona: BITMAPINFOHEADER, pixel BGRA dal basso verso l'alto, maschera vuota
+        // Icon image: BITMAPINFOHEADER, BGRA pixels bottom-up, empty mask
         static byte[] DotImage(int size)
         {
             using (var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
@@ -1571,14 +1572,14 @@ namespace SendToUnity
             }
         }
 
-        // Nei menu & indica la lettera sottolineata: per mostrarla va raddoppiata
+        // In menus & marks the underlined letter: to show it, it must be doubled
         public static string Escape(string text)
         {
             return text.Replace("&", "&&");
         }
     }
 
-    // Interfacce di Esplora risorse usate dal menu
+    // File Explorer interfaces used by the menu
     [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IShellItem
     {
@@ -1623,8 +1624,8 @@ namespace SendToUnity
         [PreserveSig] int Clone(out IEnumExplorerCommand copy);
     }
 
-    // La voce "Invia a Unity": è la classe che Explorer crea dalla DLL. Gira dentro Explorer,
-    // quindi ogni metodo intercetta gli errori e la copia vera la fa il programma, avviato a parte.
+    // The "Send to Unity" item: the class Explorer creates from the DLL. It runs inside Explorer,
+    // so every method catches errors and the actual copy is done by the program, started separately.
     [ComVisible(true), Guid("6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23"), ClassInterface(ClassInterfaceType.None)]
     public class MenuCommand : IExplorerCommand
     {
@@ -1637,7 +1638,7 @@ namespace SendToUnity
         public int GetTitle(IShellItemArray items, out IntPtr title)
         {
             MenuServer.Touch();
-            title = Marshal.StringToCoTaskMemUni("&" + App.Name);
+            title = Marshal.StringToCoTaskMemUni(App.MenuTitle);
             return Ok;
         }
 
@@ -1685,12 +1686,12 @@ namespace SendToUnity
             return Ok;
         }
 
-        // Un progetto per riga (i più usati in alto, sempre nello stesso ordine) + "Scegli progetto e cartella..."
-        // Il menu si apre a ogni tasto destro: l'elenco dei progetti (che legge file e controlla cartelle) si
-        // ricalcola solo se Unity Hub o le impostazioni sono cambiati, o dopo mezzo minuto. Lo stato
-        // "aperto in Unity" invece si controlla ogni volta, così il pallino è sempre giusto.
+        // One project per line (most used at the top, always in the same order) + "Choose project and folder..."
+        // The menu opens on every right-click: the project list (which reads files and checks folders) is
+        // recalculated only if Unity Hub or the settings changed, or after half a minute. The
+        // "open in Unity" state instead is checked every time, so the dot is always right.
         static readonly object cacheSync = new object();
-        static List<KeyValuePair<string, string>> cachedItems;   // percorso del progetto, testo della voce
+        static List<KeyValuePair<string, string>> cachedItems;   // project path, item text
         static string cachedKey;
         static DateTime cachedAt;
 
@@ -1737,13 +1738,13 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("menu: progetti non letti: " + ex.Message);
+                Log.Write("menu: projects not read: " + ex.Message);
             }
-            list.Add(new ProjectCommand("Scegli progetto e cartella...", new[] { "--pick" }, false, count > 0));
+            list.Add(new ProjectCommand("Choose project and folder...", new[] { "--pick" }, false, count > 0));
             return list;
         }
 
-        // Avvia il programma con l'elenco dei file in un file temporaneo
+        // Starts the program with the file list in a temporary file
         public static void Launch(string[] arguments, IShellItemArray items)
         {
             var paths = ItemPaths(items);
@@ -1751,7 +1752,7 @@ namespace SendToUnity
             string list = Path.Combine(Path.GetTempPath(), "SendToUnity-" + Guid.NewGuid().ToString("N") + ".txt");
             File.WriteAllLines(list, paths, new UTF8Encoding(false));
             string line = string.Join(" ", arguments.Select(Paths.Quote)) + " --list " + Paths.Quote(list);
-            Log.Write("menu: " + line + " (" + paths.Count + " elementi)");
+            Log.Write("menu: " + line + " (" + paths.Count + " items)");
             try
             {
                 Process.Start(new ProcessStartInfo(App.ExePath, line) { UseShellExecute = false, WorkingDirectory = App.Dir }).Dispose();
@@ -1778,7 +1779,7 @@ namespace SendToUnity
                     paths.Add(Marshal.PtrToStringUni(name));
                     Marshal.FreeCoTaskMem(name);
                 }
-                Marshal.ReleaseComObject(item);   // dentro Explorer: niente oggetti lasciati al garbage collector
+                Marshal.ReleaseComObject(item);   // inside Explorer: no objects left to the garbage collector
             }
             return paths;
         }
@@ -1786,7 +1787,7 @@ namespace SendToUnity
         public static List<string> ReadList(string file)
         {
             var lines = File.ReadAllLines(file, Encoding.UTF8).Where(l => l.Length > 0).ToList();
-            // si cancella solo l'elenco scritto dal menu, mai un file qualsiasi passato a mano
+            // delete only the list written by the menu, never an arbitrary file passed by hand
             bool ours = Paths.Same(Path.GetDirectoryName(Path.GetFullPath(file)), Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\')) &&
                         System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(file), "^SendToUnity-[0-9a-f]{32}\\.txt$");
             if (ours)
@@ -1832,7 +1833,7 @@ namespace SendToUnity
         {
             tip = IntPtr.Zero;
             if (!open) return MenuCommand.NotImplemented;
-            tip = Marshal.StringToCoTaskMemUni("Aperto in Unity");
+            tip = Marshal.StringToCoTaskMemUni("Open in Unity");
             return MenuCommand.Ok;
         }
 
@@ -1858,7 +1859,7 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("menu: avvio non riuscito: " + ex);
+                Log.Write("menu: launch failed: " + ex);
                 return Marshal.GetHRForException(ex);
             }
         }
@@ -1897,7 +1898,7 @@ namespace SendToUnity
                 next++;
             }
             if (fetched != IntPtr.Zero) Marshal.WriteInt32(fetched, done);
-            return done == count ? MenuCommand.Ok : 1;   // S_FALSE: elenco finito
+            return done == count ? MenuCommand.Ok : 1;   // S_FALSE: end of list
         }
 
         public int Skip(uint count)
@@ -1921,17 +1922,17 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ menu ridotto di Windows 11
-    // Nel menu ridotto compaiono solo i comandi dei programmi "impacchettati". Basta un pacchetto
-    // leggero (sparse package) con il manifest e un logo: i file restano nella cartella del
-    // programma. Windows lo accetta solo se è firmato con un certificato di cui il PC si fida, quindi
-    // il programma ne crea uno suo, firma il pacchetto, cancella subito la chiave privata (nessuno
-    // può più firmare altro con quel certificato) e chiede una volta i permessi di amministratore
-    // per aggiungerlo ai certificati fidati. Il comando gira in SendToUnity.exe --menu-server,
-    // che Windows avvia quando apri il menu.
+    // ------------------------------------------------------------------ Windows 11 short menu
+    // Only commands from "packaged" programs appear in the short menu. A lightweight package
+    // (sparse package) with the manifest and a logo is enough: the files stay in the program
+    // folder. Windows accepts it only if it's signed with a certificate the PC trusts, so
+    // the program creates its own, signs the package, deletes the private key right away (nobody
+    // can sign anything else with that certificate) and asks once for administrator rights
+    // to add it to the trusted certificates. The command runs in SendToUnity.exe --menu-server,
+    // which Windows starts when you open the menu.
 
-    // Lo stesso comando, servito da SendToUnity.exe invece che dalla DLL dentro Explorer.
-    // Windows lo mostra in entrambi i menu, quindi con il pacchetto attivo la voce del registro si toglie.
+    // The same command, served by SendToUnity.exe instead of the DLL inside Explorer.
+    // Windows shows it in both menus, so with the package active the registry item is removed.
     [ComVisible(true), Guid("3C8E5A21-7D4F-4B6A-9E1C-2F5D8A0B7C64"), ClassInterface(ClassInterfaceType.None)]
     public class ModernMenuCommand : MenuCommand
     {
@@ -1946,13 +1947,13 @@ namespace SendToUnity
             Interlocked.Exchange(ref lastCall, DateTime.UtcNow.Ticks);
         }
 
-        // Resta acceso qualche minuto dopo l'ultimo uso: la volta dopo il menu è subito pronto
+        // Stays running a few minutes after the last use: next time the menu is ready right away
         public static int Run()
         {
             var services = new RegistrationServices();
             int cookie = services.RegisterTypeForComClients(typeof(ModernMenuCommand),
                 RegistrationClassContext.LocalServer, RegistrationConnectionType.MultipleUse);
-            Log.Write("menu ridotto: pronto");
+            Log.Write("short menu: ready");
             var timer = new System.Windows.Forms.Timer { Interval = 5000 };
             timer.Tick += (s, e) =>
             {
@@ -1967,12 +1968,12 @@ namespace SendToUnity
 
     static class ModernMenu
     {
-        // Nome e certificato diversi per ogni utente del PC: ognuno ha il suo pacchetto e non tocca quello degli altri
+        // Different name and certificate for each user of the PC: each has their own package and doesn't touch the others'
         static readonly string UserTag = UserHash();
         public static readonly string PackageName = "DAVFX.InviaAUnity." + UserTag;
         static readonly string Publisher = "CN=InviaAUnity-" + UserTag;
 
-        // le prime versioni usavano un nome uguale per tutti: va tolto, altrimenti la voce comparirebbe doppia
+        // the first versions used the same name for everyone: it must be removed, otherwise the item would appear twice
         const string LegacyPackage = "DAVFX.InviaAUnity";
         const string LegacyPublisher = "CN=InviaAUnity";
 
@@ -2000,7 +2001,7 @@ namespace SendToUnity
             get { return Path.Combine(Folder, "attivo.txt"); }
         }
 
-        // Pacchetto registrato: la voce del menu classico arriva da lì
+        // Package registered: the classic menu item comes from there
         public static bool Active
         {
             get { return File.Exists(ActiveFile); }
@@ -2028,7 +2029,7 @@ namespace SendToUnity
             if (!Supported) return;
             if (Environment.GetEnvironmentVariable("SENDTOUNITY_SOLO_MENU_CLASSICO") == "1")
             {
-                Log.Write("menu ridotto: saltato su richiesta");
+                Log.Write("short menu: skipped on request");
                 Remove();
                 return;
             }
@@ -2038,10 +2039,10 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("menu ridotto non installato: " + ex);
+                Log.Write("short menu not installed: " + ex);
             }
-            // conta il pacchetto che c'è davvero (per esempio quello vecchio, se il permesso è stato negato):
-            // se c'è, la voce del registro non serve e comparirebbe doppia
+            // what counts is the package actually there (for example the old one, if permission was denied):
+            // if there is one, the registry item isn't needed and would appear twice
             try
             {
                 if (PowerShell("if (Get-AppxPackage -Name $env:STU_PACKAGE) { 'si' }").Trim() == "si")
@@ -2049,7 +2050,7 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("menu ridotto: stato del pacchetto non letto: " + ex.Message);
+                Log.Write("short menu: package state not read: " + ex.Message);
             }
         }
 
@@ -2062,7 +2063,7 @@ namespace SendToUnity
             try { state = File.ReadAllText(StateFile).Split('|'); }
             catch (Exception) { }
 
-            // stesso manifest e certificato ancora fidato: niente da rifare, nessuna richiesta
+            // same manifest and certificate still trusted: nothing to redo, no prompt
             if (state != null && state.Length == 2 && state[0] == hash && File.Exists(msix) && IsTrusted(state[1]))
             {
                 Register(msix, false);
@@ -2079,7 +2080,7 @@ namespace SendToUnity
             string thumbprint = PackageSigner.SignWithNewCertificate(msix, Publisher, cer);
             if (!Trust(cer, thumbprint))
             {
-                Log.Write("menu ridotto: certificato non accettato, resta il menu classico");
+                Log.Write("short menu: certificate not accepted, keeping the classic menu");
                 return;
             }
             File.WriteAllText(StateFile, hash + "|" + thumbprint);
@@ -2097,20 +2098,20 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("menu ridotto non rimosso: " + ex.Message);
+                Log.Write("short menu not removed: " + ex.Message);
             }
         }
 
         static void Register(string msix, bool replace)
         {
-            // i percorsi passano da variabili d'ambiente: nessun carattere del nome utente può rompere lo script
+            // paths go through environment variables: no character in the user name can break the script
             PowerShell(
                 "Get-AppxPackage -Name '" + LegacyPackage + "' | Remove-AppxPackage\n" +
                 "$p = Get-AppxPackage -Name $env:STU_PACKAGE\n" +
                 (replace ? "if ($p) { Remove-AppxPackage -Package $p.PackageFullName; $p = $null }\n" : "") +
                 "if (-not $p) { Add-AppxPackage -Path $env:STU_MSIX -ExternalLocation $env:STU_DIR }",
                 "STU_MSIX", msix);
-            Log.Write("menu ridotto registrato");
+            Log.Write("short menu registered");
         }
 
         static void TryDelete(string file)
@@ -2140,7 +2141,7 @@ namespace SendToUnity
                 {
                     try { process.Kill(); }
                     catch (Exception) { }
-                    throw new TimeoutException("PowerShell non risponde");
+                    throw new TimeoutException("PowerShell is not responding");
                 }
                 process.WaitForExit();
                 if (process.ExitCode != 0) throw new Exception("PowerShell: " + (error.Result + " " + output.Result).Trim());
@@ -2157,7 +2158,7 @@ namespace SendToUnity
             }
         }
 
-        // L'unico passo con i permessi di amministratore: Windows chiede conferma
+        // The only step with administrator rights: Windows asks for confirmation
         static bool Trust(string cer, string thumbprint)
         {
             if (new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
@@ -2173,15 +2174,15 @@ namespace SendToUnity
                 }
                 catch (System.ComponentModel.Win32Exception ex)
                 {
-                    Log.Write("menu ridotto: permessi di amministratore negati (" + ex.NativeErrorCode + ")");
+                    Log.Write("short menu: administrator rights denied (" + ex.NativeErrorCode + ")");
                     return false;
                 }
             }
             return IsTrusted(thumbprint);
         }
 
-        // Aggiunge il certificato a quelli fidati del PC e toglie quelli vecchi del programma (di questo utente).
-        // Gira con i permessi di amministratore: accetta solo il certificato appena creato, per la sola firma del codice.
+        // Adds the certificate to the PC's trusted ones and removes the program's old ones (for this user).
+        // Runs with administrator rights: accepts only the certificate just created, for code signing only.
         public static void TrustCertificate(string cer, string thumbprint)
         {
             var certificate = new X509Certificate2(cer);
@@ -2190,7 +2191,7 @@ namespace SendToUnity
             bool ca = certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => e.CertificateAuthority);
             if (!string.Equals(certificate.Thumbprint, thumbprint, StringComparison.OrdinalIgnoreCase) ||
                 certificate.Subject != Publisher || !codeSigningOnly || ca)
-                throw new InvalidOperationException("certificato inatteso, non lo aggiungo: " + certificate.Subject);
+                throw new InvalidOperationException("unexpected certificate, not adding it: " + certificate.Subject);
             using (var store = new X509Store(StoreName.TrustedPeople, StoreLocation.LocalMachine))
             {
                 store.Open(OpenFlags.ReadWrite);
@@ -2201,7 +2202,7 @@ namespace SendToUnity
                 }
                 store.Add(certificate);
             }
-            Log.Write("menu ridotto: certificato aggiunto ai fidati");
+            Log.Write("short menu: certificate added to trusted ones");
         }
 
         static string Hash(string text)
@@ -2240,15 +2241,15 @@ namespace SendToUnity
   IgnorableNamespaces=""uap uap10 desktop4 desktop5 desktop6 com rescap"">
   <Identity Name=""" + PackageName + @""" Publisher=""" + Publisher + @""" Version=""1.0.0.0"" ProcessorArchitecture=""neutral"" />
   <Properties>
-    <DisplayName>Invia a Unity</DisplayName>
-    <PublisherDisplayName>Invia a Unity</PublisherDisplayName>
+    <DisplayName>Send to Unity</DisplayName>
+    <PublisherDisplayName>Send to Unity</PublisherDisplayName>
     <Logo>logo.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
     <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
     <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
   </Properties>
   <Resources>
-    <Resource Language=""it-it"" />
+    <Resource Language=""en-us"" />
   </Resources>
   <Dependencies>
     <TargetDeviceFamily Name=""Windows.Desktop"" MinVersion=""10.0.22000.0"" MaxVersionTested=""10.0.26100.0"" />
@@ -2259,7 +2260,7 @@ namespace SendToUnity
   </Capabilities>
   <Applications>
     <Application Id=""InviaAUnity"" Executable=""SendToUnity.exe"" uap10:TrustLevel=""mediumIL"" uap10:RuntimeBehavior=""win32App"">
-      <uap:VisualElements AppListEntry=""none"" DisplayName=""Invia a Unity"" Description=""Invia a Unity"" BackgroundColor=""transparent"" Square150x150Logo=""logo.png"" Square44x44Logo=""logo.png"" />
+      <uap:VisualElements AppListEntry=""none"" DisplayName=""Send to Unity"" Description=""Send to Unity"" BackgroundColor=""transparent"" Square150x150Logo=""logo.png"" Square44x44Logo=""logo.png"" />
       <Extensions>
         <desktop4:Extension Category=""windows.fileExplorerContextMenus"">
           <desktop4:FileExplorerContextMenus>
@@ -2273,8 +2274,8 @@ namespace SendToUnity
         </desktop4:Extension>
         <com:Extension Category=""windows.comServer"">
           <com:ComServer>
-            <com:ExeServer Executable=""SendToUnity.exe"" Arguments=""--menu-server"" DisplayName=""Invia a Unity"">
-              <com:Class Id=""" + clsid + @""" DisplayName=""Invia a Unity"" />
+            <com:ExeServer Executable=""SendToUnity.exe"" Arguments=""--menu-server"" DisplayName=""Send to Unity"">
+              <com:Class Id=""" + clsid + @""" DisplayName=""Send to Unity"" />
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>
@@ -2286,7 +2287,7 @@ namespace SendToUnity
         }
     }
 
-    // Scrive il pacchetto .msix con le API di Windows (appxpackaging.dll), senza strumenti esterni
+    // Writes the .msix package with the Windows APIs (appxpackaging.dll), without external tools
     static class Package
     {
         [ComImport, Guid("5842a140-ff9f-4166-8f5c-62f5b7b0c781")]
@@ -2346,7 +2347,7 @@ namespace SendToUnity
         }
     }
 
-    // Firma il pacchetto con SignerSignEx2 (mssign32.dll), come fa signtool
+    // Signs the package with SignerSignEx2 (mssign32.dll), as signtool does
     static class PackageSigner
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -2382,7 +2383,7 @@ namespace SendToUnity
         [DllImport("mssign32.dll")]
         static extern int SignerFreeSignerContext(IntPtr context);
 
-        // Crea un certificato nuovo, firma, salva la parte pubblica in cer e cancella la chiave privata
+        // Creates a new certificate, signs, saves the public part in cer and deletes the private key
         public static string SignWithNewCertificate(string file, string subject, string cer)
         {
             string password = Guid.NewGuid().ToString("N");
@@ -2426,7 +2427,7 @@ namespace SendToUnity
             }
             catch (Exception ex)
             {
-                Log.Write("chiave del certificato non cancellata: " + ex.Message);
+                Log.Write("certificate key not deleted: " + ex.Message);
             }
         }
 
@@ -2468,7 +2469,7 @@ namespace SendToUnity
                     SubjectInfo = subject, SigningCert = cert, SignatureInfo = signature, SignerContext = context
                 });
                 IntPtr sip = put(new AppxSipClientData { SignerParams = parameters });
-                // i parametri puntano ai dati per il pacchetto e viceversa, come vuole la firma dei .msix
+                // the parameters point to the package data and vice versa, as .msix signing requires
                 var withSip = (SignerSignEx2Params)Marshal.PtrToStructure(parameters, typeof(SignerSignEx2Params));
                 withSip.SipData = sip;
                 Marshal.StructureToPtr(withSip, parameters, false);
@@ -2492,23 +2493,24 @@ namespace SendToUnity
     {
         static string SendToLink
         {
-            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "Progetto Unity.lnk"); }
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "Unity project.lnk"); }
         }
 
         public static void Install(string dll)
         {
-            // resti della prima versione (PowerShell + VBScript)
+            // leftovers from the first version (PowerShell + VBScript)
             foreach (string old in new[] { "SendToUnity.ps1", "launcher.vbs", "config.json" })
                 TryDelete(Path.Combine(App.Dir, old));
+            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "Progetto Unity.lnk"));   // Italian versions
             try { Directory.Delete(Path.Combine(Path.GetTempPath(), "SendToUnity-queue"), true); }
             catch (Exception) { }
 
             ShellMenu.SaveOpenIcon();
             ModernMenu.Install();
             ShellMenu.Register(dll);
-            // "Invia a" apre direttamente la finestra di scelta
+            // "Send to" opens the choice window directly
             LinkFile.Create(SendToLink, App.ExePath, "--pick", ShellMenu.HubExe());
-            Log.Write("installato: " + App.ExePath);
+            Log.Write("installed: " + App.ExePath);
         }
 
         public static void Uninstall()
@@ -2516,7 +2518,7 @@ namespace SendToUnity
             ShellMenu.Remove();
             ModernMenu.Remove();
             TryDelete(SendToLink);
-            Log.Write("disinstallato");
+            Log.Write("uninstalled");
         }
 
         static void TryDelete(string file)
@@ -2529,7 +2531,7 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ interfaccia
+    // ------------------------------------------------------------------ user interface
 
     static class Ui
     {
@@ -2556,7 +2558,7 @@ namespace SendToUnity
             catch (Exception) { }
         }
 
-        // Pixel a 100% convertiti per lo schermo attuale (125%, 150%, ...)
+        // Pixels at 100% converted for the current screen (125%, 150%, ...)
         public static int S(int pixels)
         {
             return (int)Math.Round(pixels * scale);
@@ -2565,7 +2567,7 @@ namespace SendToUnity
         static DialogResult Box(string text, MessageBoxButtons buttons, MessageBoxIcon icon)
         {
             Init();
-            // proprietario invisibile "sempre in primo piano": il messaggio non finisce dietro altre finestre
+            // invisible "always on top" owner: the message doesn't end up behind other windows
             using (var owner = new Form { TopMost = true, ShowInTaskbar = false })
                 return MessageBox.Show(owner, text, App.Name, buttons, icon);
         }
@@ -2580,35 +2582,35 @@ namespace SendToUnity
             Box(text, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        // Yes = sostituisci, No = salta, Cancel = non inviare niente
+        // Yes = replace, No = skip, Cancel = send nothing
         public static DialogResult AskOverwrite(List<string> targets, Result result)
         {
             Init();
             using (var dialog = new ConflictDialog(targets, result)) return dialog.ShowDialog();
         }
 
-        // interrupt: se diventa vero la notifica si chiude prima (sono arrivati altri file da copiare)
+        // interrupt: if it becomes true the notification closes early (more files to copy have arrived)
         public static void ShowResult(Result result, Func<bool> interrupt)
         {
             if (result.Errors.Count > 0)
             {
                 var lines = result.Errors.Take(10).ToList();
-                if (result.Errors.Count > 10) lines.Add("... e altri " + (result.Errors.Count - 10));
-                string text = Summary(result) + ".\n\nProblemi:\n" + string.Join("\n", lines);
+                if (result.Errors.Count > 10) lines.Add("... and " + (result.Errors.Count - 10) + " more");
+                string text = Summary(result) + ".\n\nProblems:\n" + string.Join("\n", lines);
                 if (result.AccessDenied)
-                    text += "\n\nSe in Sicurezza di Windows è attivo \"Accesso controllato alle cartelle\" " +
-                            "(Protezione da ransomware), aggiungi SendToUnity.exe alle app consentite.";
+                    text += "\n\nIf \"Controlled folder access\" is turned on in Windows Security " +
+                            "(Ransomware protection), add SendToUnity.exe to the allowed apps.";
                 Box(text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            // cliccando la notifica si apre la cartella con il primo file arrivato già selezionato
+            // clicking the notification opens the folder with the first delivered file already selected
             string open = result.FirstTarget ?? (Directory.Exists(result.Destination) ? result.Destination : null);
             string title = (result.Copied > 0 ? "\u2713  " : "") + Summary(result);
-            using (var toast = new Toast(title, Where(result), open != null ? "Clic per aprire la cartella" : null, open, null, interrupt))
+            using (var toast = new Toast(title, Where(result), open != null ? "Click to open the folder" : null, open, null, interrupt))
                 Application.Run(toast);
         }
 
-        // "Progetto  ›  Assets/Cartella"
+        // "Project  ›  Assets/Folder"
         public static string Where(Result result)
         {
             return Path.GetFileName(result.Project) + "  \u203A  " + result.Folder;
@@ -2616,20 +2618,20 @@ namespace SendToUnity
 
         static string Summary(Result result)
         {
-            string done = result.Moved ? "spostat" : "inviat";
+            string done = result.Moved ? "moved" : "sent";
             if (result.Copied == 0)
             {
-                if (result.Skipped == 1) return "Nessun file " + done + "o: era già presente";
-                if (result.Skipped > 1) return "Nessun file " + done + "o: erano già presenti";
-                if (result.AlreadyThere == 1) return "Il file è già in questa cartella";
-                if (result.AlreadyThere > 1) return "I file sono già in questa cartella";
-                return "Nessun file " + done + "o";
+                if (result.Skipped == 1) return "No files " + done + ": it was already there";
+                if (result.Skipped > 1) return "No files " + done + ": they were already there";
+                if (result.AlreadyThere == 1) return "The file is already in this folder";
+                if (result.AlreadyThere > 1) return "The files are already in this folder";
+                return "No files " + done;
             }
-            string text = result.Copied == 1 ? "1 file " + done + "o" : result.Copied + " file " + done + "i";
+            string text = result.Copied == 1 ? "1 file " + done : result.Copied + " files " + done;
             if (result.Skipped > 0)
-                text += ", " + result.Skipped + (result.Skipped == 1 ? " saltato (già presente)" : " saltati (già presenti)");
+                text += ", " + result.Skipped + (result.Skipped == 1 ? " skipped (already there)" : " skipped (already there)");
             if (result.AlreadyThere > 0)
-                text += ", " + result.AlreadyThere + " già in questa cartella";
+                text += ", " + result.AlreadyThere + " already in this folder";
             return text;
         }
     }
@@ -2682,22 +2684,22 @@ namespace SendToUnity
 
             filesLabel.Name = "filesLabel";
             filesLabel.AutoSize = true;
-            filesLabel.UseMnemonic = false;   // altrimenti la & nei nomi sparisce
+            filesLabel.UseMnemonic = false;   // otherwise the & in names disappears
             filesLabel.MaximumSize = new Size(width + Ui.S(110), 0);
             filesLabel.Margin = new Padding(0, 0, 0, Ui.S(14));
             AddRow(grid, filesLabel, null);
 
-            AddRow(grid, Caption("Progetto", 0), null);
+            AddRow(grid, Caption("Project", 0), null);
             projectCombo.Name = "projectCombo";
-            projectCombo.AccessibleName = "Progetto";   // nome letto da screen reader e UI Automation
+            projectCombo.AccessibleName = "Project";   // name read by screen readers and UI Automation
             projectCombo.DropDownStyle = ComboBoxStyle.DropDownList;
             projectCombo.Width = width;
             projectCombo.Margin = new Padding(0, 0, Ui.S(6), 0);
-            projectCombo.DrawMode = DrawMode.OwnerDrawFixed;   // pallino verde accanto ai progetti aperti
+            projectCombo.DrawMode = DrawMode.OwnerDrawFixed;   // green dot next to open projects
             projectCombo.ItemHeight = Font.Height + Ui.S(8);
             projectCombo.DrawItem += DrawProject;
             projectCombo.Items.AddRange(projects.Cast<object>().ToArray());
-            browse = new Button { Name = "browseButton", Text = "Sfoglia...", AutoSize = true, Margin = Padding.Empty };
+            browse = new Button { Name = "browseButton", Text = "Browse...", AutoSize = true, Margin = Padding.Empty };
             AddRow(grid, projectCombo, browse);
 
             pathLabel.Name = "pathLabel";
@@ -2708,9 +2710,9 @@ namespace SendToUnity
             pathLabel.Margin = new Padding(0, Ui.S(3), 0, 0);
             AddRow(grid, pathLabel, null);
 
-            AddRow(grid, Caption("Cartella dentro il progetto (puoi anche scriverne una nuova)", Ui.S(14)), null);
+            AddRow(grid, Caption("Folder inside the project (you can also type a new one)", Ui.S(14)), null);
             folderCombo.Name = "folderCombo";
-            folderCombo.AccessibleName = "Cartella";
+            folderCombo.AccessibleName = "Folder";
             folderCombo.DropDownStyle = ComboBoxStyle.DropDown;
             folderCombo.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             folderCombo.Margin = Padding.Empty;
@@ -2720,13 +2722,13 @@ namespace SendToUnity
             AddRow(grid, folderCombo, null);
 
             moveCheck.Name = "moveCheck";
-            moveCheck.Text = "Sposta invece di copiare (gli originali vengono tolti)";
+            moveCheck.Text = "Move instead of copy (the originals are removed)";
             moveCheck.AutoSize = true;
             moveCheck.Margin = new Padding(0, Ui.S(12), 0, 0);
             AddRow(grid, moveCheck, null);
 
-            var send = new Button { Name = "sendButton", Text = "Invia", DialogResult = DialogResult.OK, AutoSize = true };
-            var cancel = new Button { Name = "cancelButton", Text = "Annulla", DialogResult = DialogResult.Cancel, AutoSize = true };
+            var send = new Button { Name = "sendButton", Text = "Send", DialogResult = DialogResult.OK, AutoSize = true };
+            var cancel = new Button { Name = "cancelButton", Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             send.MinimumSize = cancel.MinimumSize = new Size(Ui.S(92), 0);
             cancel.Margin = new Padding(Ui.S(8), 0, 0, 0);
             send.Margin = Padding.Empty;
@@ -2740,7 +2742,7 @@ namespace SendToUnity
             };
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(send);
-            send.TabIndex = 0;   // da destra a sinistra: il Tab deve passare prima da Invia
+            send.TabIndex = 0;   // right to left: Tab must go to Send first
             cancel.TabIndex = 1;
             AddRow(grid, buttons, null);
 
@@ -2750,10 +2752,10 @@ namespace SendToUnity
 
             projectCombo.SelectedIndexChanged += delegate { ProjectChanged(); };
             browse.Click += delegate { Browse(); };
-            ActiveControl = folderCombo;   // il progetto è già scelto: si scrive subito la cartella
+            ActiveControl = folderCombo;   // the project is already chosen: type the folder right away
             Shown += delegate
             {
-                // aperta da un servizio in background: senza questo i tasti finirebbero ancora in Esplora risorse
+                // opened by a background service: without this, keystrokes would still go to File Explorer
                 if (!Native.BringToFront(Handle)) Activate();
                 folderCombo.SelectAll();
                 PullFiles();
@@ -2764,7 +2766,7 @@ namespace SendToUnity
             FitDropDown(projectCombo);
             if (projectCombo.Items.Count == 0)
             {
-                pathLabel.Text = "Nessun progetto trovato in Unity Hub: aggiungine uno con \"Sfoglia...\".";
+                pathLabel.Text = "No projects found in Unity Hub: add one with \"Browse...\".";
                 folderCombo.Text = "Assets";
                 ActiveControl = browse;
             }
@@ -2773,8 +2775,8 @@ namespace SendToUnity
 
         public static readonly Color OpenGreen = Color.FromArgb(22, 163, 74);
 
-        // Progetto nell'elenco: pallino verde + nome + "aperto in Unity" in grigio se Unity lo ha aperto.
-        // Lo spazio del pallino c'è sempre, così i nomi restano allineati.
+        // Project in the list: green dot + name + "open in Unity" in gray if Unity has it open.
+        // The space for the dot is always there, so names stay aligned.
         static void DrawProject(object sender, DrawItemEventArgs e)
         {
             e.DrawBackground();
@@ -2782,7 +2784,7 @@ namespace SendToUnity
             var combo = (ComboBox)sender;
             object item = combo.Items[e.Index];
             var project = item as ProjectInfo;
-            // DrawBackground colora di blu anche la casella chiusa quando ha il focus: il testo deve seguirla
+            // DrawBackground also paints the closed box blue when it has focus: the text must follow it
             bool selected = (e.State & DrawItemState.Selected) != 0;
             Color text = selected ? SystemColors.HighlightText : SystemColors.ControlText;
             Color soft = selected ? SystemColors.HighlightText : SystemColors.GrayText;
@@ -2805,12 +2807,12 @@ namespace SendToUnity
             {
                 int used = TextRenderer.MeasureText(e.Graphics, name, combo.Font, area.Size, flags).Width;
                 var rest = new Rectangle(area.Left + used + Ui.S(6), area.Top, Math.Max(0, area.Width - used - Ui.S(6)), area.Height);
-                TextRenderer.DrawText(e.Graphics, "aperto in Unity", combo.Font, rest, soft, flags);
+                TextRenderer.DrawText(e.Graphics, "open in Unity", combo.Font, rest, soft, flags);
             }
             e.DrawFocusRectangle();
         }
 
-        // L'elenco che si apre è largo quanto la voce più lunga (entro metà schermo)
+        // The drop-down list is as wide as the longest item (up to half the screen)
         static void FitDropDown(ComboBox combo)
         {
             int widest = 0;
@@ -2843,7 +2845,7 @@ namespace SendToUnity
                 index = projects.FindIndex(p => Paths.Same(p.Path, preselect));
                 if (index < 0)
                 {
-                    // progetto del menu che non è più nell'elenco (es. tolto da Unity Hub)
+                    // project from the menu that is no longer in the list (e.g. removed from Unity Hub)
                     var info = new ProjectInfo
                     {
                         Path = preselect,
@@ -2875,14 +2877,14 @@ namespace SendToUnity
         {
             using (var dialog = new FolderBrowserDialog())
             {
-                dialog.Description = "Scegli la cartella principale di un progetto Unity (quella che contiene Assets).";
+                dialog.Description = "Choose the main folder of a Unity project (the one that contains Assets).";
                 dialog.ShowNewFolderButton = false;
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
                 string path = Paths.Normalize(dialog.SelectedPath);
                 if (!Projects.IsUnityProject(path))
                 {
-                    MessageBox.Show(this, "Questa cartella non è un progetto Unity (mancano Assets o ProjectSettings).",
+                    MessageBox.Show(this, "This folder is not a Unity project (Assets or ProjectSettings is missing).",
                         App.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -2903,7 +2905,7 @@ namespace SendToUnity
                 }
                 catch (Exception ex)
                 {
-                    Log.Write("progetto aggiunto non salvato: " + ex.Message);   // per questo invio va bene lo stesso
+                    Log.Write("added project not saved: " + ex.Message);   // fine for this send anyway
                 }
                 var info = new ProjectInfo { Path = path, Name = Path.GetFileName(path), Open = Projects.IsOpen(path) };
                 projectCombo.SelectedIndex = projectCombo.Items.Add(info);
@@ -2916,7 +2918,7 @@ namespace SendToUnity
             {
                 if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(PullFiles));
             }
-            catch (Exception) { }   // se la finestra si sta chiudendo i file restano in coda e vengono presi dopo
+            catch (Exception) { }   // if the window is closing, the files stay queued and are taken later
         }
 
         void PullFiles()
@@ -2931,8 +2933,8 @@ namespace SendToUnity
         {
             var names = Files.Select(f => Path.GetFileName(f.TrimEnd('\\'))).ToList();
             string list = string.Join(", ", names.Take(4));
-            if (names.Count > 4) list += " e altri " + (names.Count - 4);
-            filesLabel.Text = (names.Count == 1 ? "Da inviare: " : names.Count + " elementi da inviare: ") + list;
+            if (names.Count > 4) list += " and " + (names.Count - 4) + " more";
+            filesLabel.Text = (names.Count == 1 ? "To send: " : names.Count + " items to send: ") + list;
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -2944,16 +2946,16 @@ namespace SendToUnity
             string folder = null;
             var project = projectCombo.SelectedItem as ProjectInfo;
             if (project == null)
-                error = "Scegli un progetto, oppure aggiungilo con \"Sfoglia...\".";
+                error = "Choose a project, or add it with \"Browse...\".";
             else if (!Projects.IsUnityProject(project.Path))
-                error = "Il progetto non esiste più:\n" + project.Path;
+                error = "The project no longer exists:\n" + project.Path;
             else
                 folder = Folders.Clean(folderCombo.Text, out error);
 
             if (error != null)
             {
                 MessageBox.Show(this, error, App.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                e.Cancel = true;   // la finestra resta aperta per correggere
+                e.Cancel = true;   // the window stays open for corrections
                 return;
             }
             Project = project;
@@ -2968,13 +2970,13 @@ namespace SendToUnity
         }
     }
 
-    // Domanda sui file già presenti, con pulsanti che dicono cosa fanno
+    // Question about files already there, with buttons that say what they do
     class ConflictDialog : Form
     {
         public ConflictDialog(List<string> targets, Result result)
         {
             Name = "ConflictDialog";
-            Text = "File già presenti";
+            Text = "Files already there";
             Font = SystemFonts.MessageBoxFont;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -3002,11 +3004,11 @@ namespace SendToUnity
                 UseMnemonic = false,
                 MaximumSize = new Size(width, 0),
                 Font = new Font(Font, FontStyle.Bold),
-                Text = (targets.Count == 1 ? "1 file esiste già" : targets.Count + " file esistono già") + " in " + where
+                Text = (targets.Count == 1 ? "1 file already exists" : targets.Count + " files already exist") + " in " + where
             });
 
             var names = targets.Take(8).Select(t => Path.GetFileName(t)).ToList();
-            if (targets.Count > 8) names.Add("... e altri " + (targets.Count - 8));
+            if (targets.Count > 8) names.Add("... and " + (targets.Count - 8) + " more");
             grid.Controls.Add(new Label
             {
                 AutoSize = true,
@@ -3022,12 +3024,12 @@ namespace SendToUnity
                 MaximumSize = new Size(width, 0),
                 ForeColor = SystemColors.GrayText,
                 Margin = new Padding(0, Ui.S(12), 0, 0),
-                Text = "Sostituendoli, le impostazioni di import di Unity (file .meta) restano invariate."
+                Text = "If you replace them, Unity's import settings (.meta files) stay unchanged."
             });
 
-            var replace = new Button { Text = "Sostituisci", DialogResult = DialogResult.Yes, AutoSize = true };
-            var skip = new Button { Text = "Salta questi", DialogResult = DialogResult.No, AutoSize = true };
-            var cancel = new Button { Text = "Annulla", DialogResult = DialogResult.Cancel, AutoSize = true };
+            var replace = new Button { Text = "Replace", DialogResult = DialogResult.Yes, AutoSize = true };
+            var skip = new Button { Text = "Skip these", DialogResult = DialogResult.No, AutoSize = true };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             foreach (var b in new[] { replace, skip, cancel })
             {
                 b.MinimumSize = new Size(Ui.S(92), 0);
@@ -3050,9 +3052,9 @@ namespace SendToUnity
             grid.Controls.Add(buttons);
 
             Controls.Add(grid);
-            AcceptButton = replace;   // il caso tipico: texture aggiornate da rimandare
+            AcceptButton = replace;   // the typical case: updated textures to send again
             CancelButton = cancel;
-            ActiveControl = replace;  // altrimenti il focus finisce su Annulla e Invio annulla
+            ActiveControl = replace;  // otherwise focus lands on Cancel and Enter cancels
             Shown += delegate
             {
                 if (!Native.BringToFront(Handle)) Activate();
@@ -3060,7 +3062,7 @@ namespace SendToUnity
         }
     }
 
-    // Colori delle notifiche: gli stessi dei menu di Windows, chiari o scuri come il tema delle app
+    // Notification colors: the same as Windows menus, light or dark like the app theme
     static class Look
     {
         public static readonly bool Dark = ReadDark();
@@ -3086,7 +3088,7 @@ namespace SendToUnity
             }
         }
 
-        // Titolo in Segoe UI Semibold (quello dei titoli di Windows), se c'è
+        // Title in Segoe UI Semibold (the one Windows uses for titles), if available
         public static Font TitleFont(Font font)
         {
             try { return new Font(new FontFamily("Segoe UI Semibold"), font.SizeInPoints + 1.5f, FontStyle.Regular); }
@@ -3094,19 +3096,19 @@ namespace SendToUnity
         }
     }
 
-    // Notifica in basso a destra che non ruba il focus a Unity: quella finale sparisce da sola
-    // (non mentre il mouse ci è sopra), quella di avanzamento si aggiorna finché la copia non è finita
+    // Notification at the bottom right that doesn't steal focus from Unity: the final one disappears by itself
+    // (not while the mouse is over it), the progress one updates until the copy is finished
     class Toast : Form
     {
         const int VisibleMs = 3500;
 
-        readonly string open;           // file o cartella da aprire con un clic (null = niente)
-        readonly Progress progress;     // non null: notifica di avanzamento
-        readonly Func<bool> interrupt;  // vero = deve lasciare il posto a un nuovo invio
+        readonly string open;           // file or folder to open with a click (null = nothing)
+        readonly Progress progress;     // not null: progress notification
+        readonly Func<bool> interrupt;  // true = must make way for a new send
         readonly Label titleLabel;
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 100 };
         DateTime closeAt;
-        Point mouseAtStart;   // se compare proprio sotto il mouse fermo, sparisce lo stesso
+        Point mouseAtStart;   // if it appears right under a still mouse, it disappears anyway
         bool mouseMoved;
         bool placed;
 
@@ -3116,7 +3118,7 @@ namespace SendToUnity
             this.progress = progress;
             this.interrupt = interrupt;
             Name = "toast";
-            Text = App.Name + (progress == null ? " - notifica" : " - avanzamento");
+            Text = App.Name + (progress == null ? " - notification" : " - progress");
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
@@ -3165,7 +3167,7 @@ namespace SendToUnity
             }
             else
             {
-                // sotto il mouse non sparisce: magari la si sta per cliccare
+                // under the mouse it doesn't disappear: the user may be about to click it
                 Point mouse = Control.MousePosition;
                 if (mouse != mouseAtStart) mouseMoved = true;
                 if (mouseMoved && Bounds.Contains(mouse)) closeAt = DateTime.UtcNow.AddMilliseconds(1500);
@@ -3198,12 +3200,12 @@ namespace SendToUnity
             {
                 var cp = base.CreateParams;
                 cp.ExStyle |= 0x08000000 | 0x00000080 | 0x00000008;   // NOACTIVATE | TOOLWINDOW | TOPMOST
-                cp.ClassStyle |= 0x00020000;                           // ombra, come i menu
+                cp.ClassStyle |= 0x00020000;                           // shadow, like menus
                 return cp;
             }
         }
 
-        // Angoli arrotondati e bordo sottile come i menu di Windows 11; su Windows 10 un bordo di 1 pixel
+        // Rounded corners and a thin border like Windows 11 menus; on Windows 10 a 1-pixel border
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -3225,7 +3227,7 @@ namespace SendToUnity
             timer.Start();
         }
 
-        // se il testo cambia lunghezza la notifica resta attaccata all'angolo in basso a destra
+        // if the text changes length the notification stays anchored to the bottom right corner
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
@@ -3240,9 +3242,9 @@ namespace SendToUnity
 
         void OpenTarget()
         {
-            Log.Write("apro " + open);
+            Log.Write("opening " + open);
             Hide();
-            Native.AllowSetForegroundWindow(-1);   // la cartella si apre davanti a Unity, non dietro
+            Native.AllowSetForegroundWindow(-1);   // the folder opens in front of Unity, not behind it
             try
             {
                 if (!File.Exists(open))
@@ -3251,15 +3253,15 @@ namespace SendToUnity
                 }
                 else
                 {
-                    // file selezionato, nella finestra già aperta se c'è
+                    // file selected, in the window already open if there is one
                     if (!Native.ShowInExplorer(open)) Process.Start("explorer.exe", "/select," + Paths.Quote(open));
-                    // alcune versioni di Windows aprono la cartella senza selezionare il file: ci si pensa da qui
-                    if (!ExplorerWindows.Select(open, 5000)) Log.Write("file non selezionato in Esplora risorse");
+                    // some versions of Windows open the folder without selecting the file: handle it from here
+                    if (!ExplorerWindows.Select(open, 5000)) Log.Write("file not selected in File Explorer");
                 }
             }
             catch (Exception ex)
             {
-                Log.Write("cartella non aperta: " + ex.Message);
+                Log.Write("folder not opened: " + ex.Message);
             }
             Close();
         }
@@ -3271,7 +3273,7 @@ namespace SendToUnity
         }
     }
 
-    // ------------------------------------------------------------------ utilità
+    // ------------------------------------------------------------------ utilities
 
     static class Paths
     {
@@ -3288,7 +3290,7 @@ namespace SendToUnity
             return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         }
 
-        // true se path coincide con folder o sta al suo interno
+        // true if path is the same as folder or is inside it
         public static bool IsInside(string path, string folder)
         {
             return Same(path, folder) ||
@@ -3302,7 +3304,7 @@ namespace SendToUnity
             catch (Exception) { return false; }
         }
 
-        // Argomento tra virgolette per la riga di comando: i backslash finali vanno raddoppiati
+        // Quoted command-line argument: trailing backslashes must be doubled
         public static string Quote(string text)
         {
             int slashes = 0;
@@ -3336,7 +3338,7 @@ namespace SendToUnity
                 }
                 catch (IOException)
                 {
-                    Thread.Sleep(15);   // un'altra istanza sta scrivendo
+                    Thread.Sleep(15);   // another instance is writing
                 }
                 catch (Exception)
                 {
@@ -3351,7 +3353,7 @@ namespace SendToUnity
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
-        // Windows 11: angoli arrotondati e colore del bordo; false se Windows non li supporta
+        // Windows 11: rounded corners and border color; false if Windows doesn't support them
         public static bool RoundCorners(IntPtr window, Color border)
         {
             try
@@ -3396,7 +3398,7 @@ namespace SendToUnity
         [DllImport("shell32.dll")] static extern int SHOpenFolderAndSelectItems(IntPtr pidl, uint count, IntPtr[] items, uint flags);
         [DllImport("ole32.dll")] static extern void CoTaskMemFree(IntPtr memory);
 
-        // Apre la cartella del file con il file selezionato; se la cartella è già aperta usa quella finestra
+        // Opens the file's folder with the file selected; if the folder is already open it uses that window
         public static bool ShowInExplorer(string file)
         {
             IntPtr pidl;
@@ -3412,7 +3414,7 @@ namespace SendToUnity
             }
         }
 
-        // Guardare la coda dei messaggi (senza toglierli) fa risultare il processo "pronto all'input"
+        // Peeking at the message queue (without removing messages) makes the process count as "ready for input"
         public static void SignalIdle()
         {
             NativeMessage message;
@@ -3424,7 +3426,7 @@ namespace SendToUnity
             if (IsIconic(window)) ShowWindow(window, 9);   // SW_RESTORE
             if (SetForegroundWindow(window)) return true;
 
-            // Windows a volte rifiuta: ci si aggancia al thread in primo piano e si riprova
+            // Windows sometimes refuses: attach to the foreground thread and try again
             uint ignored;
             uint foreground = GetWindowThreadProcessId(GetForegroundWindow(), out ignored);
             uint current = GetCurrentThreadId();
@@ -3442,21 +3444,21 @@ namespace SendToUnity
         }
     }
 
-    // Le finestre di Esplora risorse viste dall'automazione di Windows (Shell.Application), come da uno script
+    // File Explorer windows as seen through Windows automation (Shell.Application), as from a script
     static class ExplorerWindows
     {
-        // Seleziona il file nelle finestre aperte sulla sua cartella, aspettando che compaiano,
-        // finché la selezione resta stabile (la vista appena aperta a volte la perde)
+        // Selects the file in the windows open on its folder, waiting for them to appear,
+        // until the selection stays stable (a freshly opened view sometimes loses it)
         public static bool Select(string file, int timeoutMs)
         {
             bool done = false;
             var thread = new Thread(() =>
             {
                 try { done = SelectLoop(file, timeoutMs); }
-                catch (Exception ex) { Log.Write("selezione in Esplora risorse: " + ex.Message); }
+                catch (Exception ex) { Log.Write("selection in File Explorer: " + ex.Message); }
             });
             thread.SetApartmentState(ApartmentState.STA);
-            thread.IsBackground = true;   // se Esplora risorse non risponde il programma si chiude lo stesso
+            thread.IsBackground = true;   // if File Explorer doesn't respond the program exits anyway
             thread.Start();
             thread.Join(timeoutMs + 2000);
             return done;
@@ -3488,9 +3490,9 @@ namespace SendToUnity
                             continue;
                         }
                         object item = Call(shown, "ParseName", Path.GetFileName(file));
-                        if (item != null) Call(view, "SelectItem", item, 1 | 4 | 8 | 16);   // solo lui, visibile, con il focus
+                        if (item != null) Call(view, "SelectItem", item, 1 | 4 | 8 | 16);   // only it, visible, with focus
                     }
-                    catch (Exception) { }   // finestre che non mostrano cartelle o che si stanno chiudendo
+                    catch (Exception) { }   // windows that don't show folders or that are closing
                 }
 
                 if (found > 0 && selected == found)
@@ -3529,7 +3531,7 @@ namespace SendToUnity
         }
     }
 
-    // Restart Manager di Windows: dice quali processi tengono aperto un file
+    // Windows Restart Manager: tells which processes keep a file open
     static class RestartManager
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -3565,7 +3567,7 @@ namespace SendToUnity
         static extern int RmGetList(uint session, out uint needed, ref uint count,
             [In, Out] ProcessInfo[] infos, ref uint rebootReasons);
 
-        // null se Restart Manager non risponde
+        // null if Restart Manager doesn't respond
         public static List<int> Holders(string file)
         {
             uint session;
@@ -3578,7 +3580,7 @@ namespace SendToUnity
                 uint reasons = 0;
                 int code = RmGetList(session, out needed, ref count, null, ref reasons);
                 if (code == 0) return new List<int>();
-                if (code != 234) return null;   // 234 = ERROR_MORE_DATA: c'è almeno un processo
+                if (code != 234) return null;   // 234 = ERROR_MORE_DATA: there is at least one process
                 var infos = new ProcessInfo[needed];
                 count = needed;
                 if (RmGetList(session, out needed, ref count, infos, ref reasons) != 0) return null;
@@ -3591,7 +3593,7 @@ namespace SendToUnity
         }
     }
 
-    // Collegamento .lnk (per "Invia a") senza passare da VBScript
+    // .lnk shortcut (for "Send to") without going through VBScript
     static class LinkFile
     {
         [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
