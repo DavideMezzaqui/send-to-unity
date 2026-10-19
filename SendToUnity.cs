@@ -1404,6 +1404,7 @@ namespace SendToUnity
             foreach (string keyPath in Keys)
             {
                 Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
+                if (ModernMenu.Active) continue;   // la voce arriva dal pacchetto, in tutti e due i menu
                 using (var key = Registry.CurrentUser.CreateSubKey(keyPath))
                 {
                     key.SetValue("MUIVerb", "&" + App.Name);   // tasto destro, poi I
@@ -1583,15 +1584,9 @@ namespace SendToUnity
         public const uint SeparatorBefore = 0x20;    // ECF_SEPARATORBEFORE
         const uint FileSystemPath = 0x80058000;      // SIGDN_FILESYSPATH
 
-        // Il menu ridotto di Windows 11 mostra il testo così com'è: lì niente & per la scorciatoia
-        protected virtual bool Modern
-        {
-            get { return false; }
-        }
-
         public int GetTitle(IShellItemArray items, out IntPtr title)
         {
-            title = Marshal.StringToCoTaskMemUni(Modern ? App.Name : "&" + App.Name);
+            title = Marshal.StringToCoTaskMemUni("&" + App.Name);
             return Ok;
         }
 
@@ -1635,15 +1630,14 @@ namespace SendToUnity
 
         public int EnumSubCommands(out IEnumExplorerCommand commands)
         {
-            commands = new CommandList(Build(Modern));
+            commands = new CommandList(Build());
             return Ok;
         }
 
         // Un progetto per riga (i più usati in alto, sempre nello stesso ordine) + "Scegli progetto e cartella..."
-        static List<IExplorerCommand> Build(bool modern)
+        static List<IExplorerCommand> Build()
         {
             MenuServer.Touch();
-            Func<string, string> escape = text => modern ? text : ShellMenu.Escape(text);
             var list = new List<IExplorerCommand>();
             int count = 0;
             try
@@ -1652,7 +1646,7 @@ namespace SendToUnity
                 foreach (var p in Projects.Known(settings, false).Take(ShellMenu.MaxProjects))
                 {
                     string folder = settings.FolderFor(p.Path);
-                    string label = escape(p.DisplayName) + (folder != null ? "   →  " + escape(folder) : "");
+                    string label = ShellMenu.Escape(p.DisplayName) + (folder != null ? "   →  " + ShellMenu.Escape(folder) : "");
                     list.Add(new ProjectCommand(label, new[] { "--to", p.Path }, Projects.IsOpen(p.Path), false));
                     count++;
                 }
@@ -1836,13 +1830,11 @@ namespace SendToUnity
     // per aggiungerlo ai certificati fidati. Il comando gira in SendToUnity.exe --menu-server,
     // che Windows avvia quando apri il menu.
 
+    // Lo stesso comando, servito da SendToUnity.exe invece che dalla DLL dentro Explorer.
+    // Windows lo mostra in entrambi i menu, quindi con il pacchetto attivo la voce del registro si toglie.
     [ComVisible(true), Guid("3C8E5A21-7D4F-4B6A-9E1C-2F5D8A0B7C64"), ClassInterface(ClassInterfaceType.None)]
     public class ModernMenuCommand : MenuCommand
     {
-        protected override bool Modern
-        {
-            get { return true; }
-        }
     }
 
     static class MenuServer
@@ -1888,6 +1880,17 @@ namespace SendToUnity
             get { return Path.Combine(Folder, "stato.txt"); }
         }
 
+        static string ActiveFile
+        {
+            get { return Path.Combine(Folder, "attivo.txt"); }
+        }
+
+        // Pacchetto registrato: la voce del menu classico arriva da lì
+        public static bool Active
+        {
+            get { return File.Exists(ActiveFile); }
+        }
+
         public static bool Supported
         {
             get
@@ -1906,6 +1909,7 @@ namespace SendToUnity
 
         public static void Install()
         {
+            TryDelete(ActiveFile);
             if (!Supported) return;
             if (Environment.GetEnvironmentVariable("SENDTOUNITY_SOLO_MENU_CLASSICO") == "1")
             {
@@ -1970,7 +1974,14 @@ namespace SendToUnity
                 "$p = Get-AppxPackage -Name '" + PackageName + "'\n" +
                 (replace ? "if ($p) { Remove-AppxPackage -Package $p.PackageFullName; $p = $null }\n" : "") +
                 "if (-not $p) { Add-AppxPackage -Path " + PsQuote(msix) + " -ExternalLocation " + PsQuote(App.Dir) + " }");
+            File.WriteAllText(ActiveFile, PackageName);
             Log.Write("menu ridotto registrato");
+        }
+
+        static void TryDelete(string file)
+        {
+            try { File.Delete(file); }
+            catch (Exception) { }
         }
 
         static string PsQuote(string text)
@@ -2345,8 +2356,8 @@ namespace SendToUnity
             catch (Exception) { }
 
             ShellMenu.SaveOpenIcon();
-            ShellMenu.Register(dll);
             ModernMenu.Install();
+            ShellMenu.Register(dll);
             // "Invia a" apre direttamente la finestra di scelta
             LinkFile.Create(SendToLink, App.ExePath, "--pick", ShellMenu.HubExe());
             Log.Write("installato: " + App.ExePath);

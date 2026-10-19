@@ -289,9 +289,9 @@ public static class ExplorerMenu {
             int hr = menu.QueryContextMenu(popup, 0, First, Last, 0);
             if (hr < 0) throw new Exception("QueryContextMenu " + hr.ToString("x"));
             int count = GetMenuItemCount(popup);
+            for (int i = 0; i < count; i++) TopItems.Add(Text(popup, i));
             for (int i = 0; i < count; i++) {
-                string text = Text(popup, i);
-                TopItems.Add(text);
+                string text = TopItems[i];
                 if (text.Replace("&", "") != parent) continue;
                 IntPtr sub;
                 uint parentId = Id(popup, i, out sub);

@@ -285,13 +285,6 @@ try {
     Check ((Install-Tool) -eq 0) 'install.cmd termina senza errori'
     Check (Exists $exe) 'programma compilato con il compilatore C# di Windows'
     Check (-not (Exists (Join-Path $app 'launcher.vbs'))) 'file della vecchia versione rimossi'
-    $key = $registry.OpenSubKey($fileMenu)
-    Check ($null -ne $key) 'voce "Invia a Unity" sui file'
-    if ($key) {
-        Check ($key.GetValue('MUIVerb') -eq '&Invia a Unity') 'testo della voce, con la I come scorciatoia'
-        Check ($null -eq $key.OpenSubKey('command')) 'vecchia voce sostituita'
-        Check ($key.GetValue('ExplorerCommandHandler') -eq '{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}') 'la voce e'' il comando del menu dinamico'
-    }
     $server = $registry.OpenSubKey("$classKey\InprocServer32")
     Check ($null -ne $server) 'comando del menu registrato per l''utente'
     if ($server) {
@@ -299,12 +292,22 @@ try {
         Check (Exists $dll) "DLL del menu compilata ($dll)"
     }
     Check (Exists (Join-Path $app 'aperto.ico')) 'icona del pallino verde'
+    $key = $registry.OpenSubKey($fileMenu)
     if ($modern) {
+        # su Windows 11 la voce arriva dal pacchetto, in tutti e due i menu: quella del registro sparisce
         $package = Get-AppxPackage -Name 'DAVFX.InviaAUnity'
         Check ($null -ne $package) 'Windows 11: pacchetto del menu ridotto registrato'
         if (-not $package) { Note ('dal log: ' + ((Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ -match 'menu ridotto|certificato' }) -join ' | ')) }
+        Check ($null -eq $key -and $null -eq $registry.OpenSubKey($dirMenu)) 'Windows 11: nessuna voce doppia nel registro (vecchia voce compresa)'
+    } else {
+        Check ($null -ne $key) 'voce "Invia a Unity" sui file'
+        if ($key) {
+            Check ($key.GetValue('MUIVerb') -eq '&Invia a Unity') 'testo della voce, con la I come scorciatoia'
+            Check ($null -eq $key.OpenSubKey('command')) 'vecchia voce sostituita'
+            Check ($key.GetValue('ExplorerCommandHandler') -eq '{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}') 'la voce e'' il comando del menu dinamico'
+        }
+        Check ($null -ne $registry.OpenSubKey($dirMenu)) 'voce "Invia a Unity" sulle cartelle'
     }
-    Check ($null -ne $registry.OpenSubKey($dirMenu)) 'voce "Invia a Unity" sulle cartelle'
     Check (Exists $sendToLink) 'collegamento in "Invia a"'
     if (Exists $sendToLink) {
         $link = (New-Object -ComObject WScript.Shell).CreateShortcut($sendToLink)
@@ -335,7 +338,7 @@ try {
     $items = Menu @($albedo)
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Note ('sottomenu: ' + (@($items) -join ' | '))
-    Note ('voci principali: ' + ([ExplorerMenu]::TopItems -join ' | '))
+    Check (@([ExplorerMenu]::TopItems | Where-Object { $_.Replace('&', '') -eq 'Invia a Unity' }).Count -le 1) 'una sola voce "Invia a Unity" nel menu'
     Check (@($items).Count -eq 4) 'sottomenu: 2 progetti, separatore, "Scegli progetto e cartella..." (il progetto sparito escluso)'
     Check (@($items)[0] -eq 'Gioco [Prova] && Co') 'primo il progetto usato piu di recente, con la & mostrata'
     Check (@($items)[-1] -eq 'Scegli progetto e cartella...') 'ultima voce: Scegli progetto e cartella...'
