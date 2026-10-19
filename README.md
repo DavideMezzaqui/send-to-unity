@@ -1,102 +1,102 @@
-# Invia a Unity
+# Send to Unity
 
-Manda file e cartelle da Esplora risorse dentro un progetto Unity con il tasto destro:
-niente trascinamenti, niente finestre affiancate.
+Send files and folders from File Explorer straight into a Unity project with a right-click:
+no dragging, no side-by-side windows.
 
-![Il menu del tasto destro](docs/menu.png)
+![The right-click menu](docs/menu.png)
 
-Su Windows 11 la voce c'è anche nel menu ridotto, quello che si apre subito:
+On Windows 11 the item is also in the short menu, the one that opens first:
 
-![Il menu ridotto di Windows 11](docs/menu-ridotto.png)
+![The Windows 11 short menu](docs/short-menu.png)
 
-## Come si usa
+## How to use it
 
-Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul progetto.
+Select the files (or a folder), right-click > **Send to Unity** > click the project.
 
-- **La prima volta** che usi un progetto si apre una finestra: scegli la cartella dentro
-  `Assets` (puoi anche scriverne una nuova, viene creata).
+- **The first time** you use a project a window opens: choose the folder inside `Assets`
+  (you can also type a new one, it gets created).
 
-  ![La finestra](docs/finestra.png)
+  ![The window](docs/window.png)
 
-- **Dalla seconda volta** il progetto compare nel menu con la sua cartella: un clic e i file
-  sono dentro, senza finestre. Compare solo una notifica in basso a destra; cliccandola si apre
-  la cartella con il file appena arrivato già selezionato (finché il mouse è sopra, la notifica
-  non sparisce). Se la copia è lunga (cartelle grandi, file pesanti) la notifica mostra
-  l'avanzamento.
+- **From the second time on** the project shows up in the menu with its folder: one click and the
+  files are in, no windows. Only a notification appears in the bottom-right corner; clicking it
+  opens the folder with the file that just arrived already selected (it stays up while the mouse
+  is over it). If the copy takes a while (big folders, heavy files) the notification shows the
+  progress.
 
-  ![La notifica](docs/notifica.png)
+  ![The notification](docs/notification.png)
 
-- I progetti usati più di recente stanno in alto. Arrivano da Unity Hub e dai progetti recenti
-  di Unity; se ne manca uno: **Scegli progetto e cartella...** > **Sfoglia...**
-  Due progetti con lo stesso nome si distinguono dalla cartella che li contiene.
-- Se il progetto è **aperto in Unity**, a copia finita Unity viene portato in primo piano e
-  importa subito i file. Se è chiuso, li importa alla prossima apertura. I progetti aperti hanno
-  un pallino verde, sia nel menu sia nella finestra di scelta: il menu viene preparato ogni volta
-  che lo apri, quindi il pallino è sempre aggiornato.
+- The most recently used projects are at the top. They come from Unity Hub and from Unity's
+  recent projects; if one is missing: **Choose project and folder...** > **Browse...**
+  Two projects with the same name are told apart by the folder that contains them.
+- If the project is **open in Unity**, once the copy is done Unity is brought to the front and
+  imports the files right away. If it's closed, it imports them the next time it opens. Open
+  projects have a green dot, both in the menu and in the window: the menu is built every time
+  you open it, so the dot is always up to date.
 
-  ![Progetti aperti](docs/progetti-aperti.png)
-- Se un file **esiste già** puoi sostituirlo o saltarlo. Sostituendo, il file `.meta` resta:
-  riferimenti e impostazioni di import in Unity non si rompono. Premendo Invio si sostituisce.
-  Se Unity sta ancora importando il vecchio file, il programma aspetta qualche secondo e riprova.
+  ![Open projects](docs/open-projects.png)
+- If a file **already exists** you can replace it or skip it. When replacing, the `.meta` file
+  stays: references and import settings in Unity don't break. Pressing Enter replaces.
+  If Unity is still importing the old file, the program waits a few seconds and tries again.
 
-  ![File già presenti](docs/file-presenti.png)
+  ![Files already there](docs/conflict.png)
 
-- Funziona con molti file insieme (provato con 40) e con le cartelle, sottocartelle comprese.
-  Copiando una cartella vengono saltati `.git`, `__MACOSX`, `Thumbs.db` e simili.
-- Nella finestra c'è anche **Sposta**, che toglie i file dalla posizione originale.
-- **File `.meta` di Unity**, quando i file arrivano da un progetto Unity:
-  - copiando, il `.meta` arriva insieme al file, quindi le impostazioni di import restano;
-  - spostando, il `.meta` segue sempre il file (e le cartelle), quindi nell'origine non restano
-    `.meta` orfani e, dentro lo stesso progetto, i riferimenti non si rompono;
-  - copiando dentro lo stesso progetto il `.meta` non viene duplicato (Unity ne crea uno nuovo);
-  - un `.meta` che il progetto di destinazione ha già non viene mai sostituito.
-- Da tastiera: tasto menu (o Maiusc+F10), **I**, freccia destra, Invio.
+- It works with many files at once (tested with 40) and with folders, subfolders included.
+  When copying a folder, `.git`, `__MACOSX`, `Thumbs.db` and the like are skipped.
+- The window also has **Move**, which removes the files from their original location.
+- **Unity `.meta` files**, when the files come from a Unity project:
+  - when copying, the `.meta` comes along with the file, so the import settings are kept;
+  - when moving, the `.meta` always follows the file (and folders), so no orphan `.meta` files
+    are left behind and, inside the same project, references don't break;
+  - when copying inside the same project the `.meta` is not duplicated (Unity creates a new one);
+  - a `.meta` that the destination project already has is never replaced.
+- From the keyboard: menu key (or Shift+F10), **U**, right arrow, Enter.
 
-## Installazione
+## Installation
 
-1. Su GitHub: **Code** > **Download ZIP**, poi estrai lo zip.
-2. Doppio clic su `install.cmd`.
+1. On GitHub: **Code** > **Download ZIP**, then extract the zip.
+2. Double-click `install.cmd`.
 
-Non servono download: il programma viene compilato sul tuo PC con il compilatore C# che fa già
-parte di Windows. Se compare "Windows ha protetto il PC", clicca "Ulteriori informazioni" >
-"Esegui comunque" (succede con i file .cmd scaricati da internet).
+Nothing to download: the program is compiled on your PC with the C# compiler that already ships
+with Windows. If "Windows protected your PC" shows up, click "More info" > "Run anyway" (it
+happens with .cmd files downloaded from the internet).
 
-**Su Windows 11**, la prima volta, Windows chiede i permessi di amministratore: servono per far
-comparire "Invia a Unity" anche nel menu ridotto (quello che si apre subito col tasto destro).
-Se rispondi di no, la voce resta solo sotto "Mostra altre opzioni" e il resto funziona uguale.
-Dalla seconda installazione in poi non lo chiede più.
+**On Windows 11**, the first time, Windows asks for administrator permission: it's needed to show
+"Send to Unity" in the short menu too (the one that opens first on right-click). If you say no,
+the item stays only under "Show more options" and everything else works the same. From the
+second installation on it doesn't ask again.
 
-Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
+To update: run `install.cmd` again. To remove everything: `uninstall.cmd`.
+After installing you can delete the downloaded folder (keep the zip if you want `uninstall.cmd`).
 
-## Da sapere
+## Good to know
 
-- Il menu del tasto destro è una piccola estensione di Esplora risorse (una DLL compilata da
-  `install.cmd`, registrata solo per il tuo utente). Se dopo un aggiornamento il menu sembra
-  ancora quello vecchio, esci da Windows e rientra (oppure riavvia Esplora risorse).
-- La notifica segue il tema di Windows (chiaro o scuro), come i menu.
-- **Windows 11, menu ridotto**: Windows mostra lì solo i programmi installati come pacchetto
-  firmato. Il programma crea un pacchetto leggero (dentro ci sono solo la descrizione e un logo,
-  i file restano in `%LOCALAPPDATA%\SendToUnity`) e lo firma con un certificato creato sul tuo PC.
-  Il permesso di amministratore serve una volta sola, per aggiungere quel certificato a quelli
-  di cui il PC si fida. La chiave segreta del certificato viene cancellata subito dopo la firma:
-  nessuno può usarlo per firmare altro. Disinstallando, il pacchetto viene tolto ma il
-  certificato resta tra quelli fidati (senza chiave non serve a nulla); se vuoi toglierlo:
-  `certlm.msc` > Persone attendibili > Certificati > InviaAUnity > Elimina.
-- Unity importa da solo solo se in *Preferences > Asset Pipeline* è attivo **Auto Refresh**
-  e non sei in Play mode. Altrimenti premi Ctrl+R in Unity.
-- C'è anche tasto destro > **Invia a** > **Progetto Unity**, che apre direttamente la finestra.
-- Tutto quello che succede viene scritto in `%LOCALAPPDATA%\SendToUnity\log.txt`:
-  se qualcosa non va, è il file da guardare (o da mandare).
+- The right-click menu is a small File Explorer extension (a DLL compiled by `install.cmd`,
+  registered only for your user). If after an update the menu still looks like the old one,
+  sign out of Windows and back in (or restart File Explorer).
+- The notification follows the Windows theme (light or dark), like the menus.
+- **Windows 11, short menu**: Windows only shows programs installed as a signed package there.
+  The program creates a lightweight package (it only contains a description and a logo, the files
+  stay in `%LOCALAPPDATA%\SendToUnity`) and signs it with a certificate created on your PC.
+  Administrator permission is needed only once, to add that certificate to the ones your PC
+  trusts. The certificate's private key is deleted right after signing: nobody can use it to
+  sign anything else. When uninstalling, the package is removed but the certificate stays among
+  the trusted ones (useless without its key); to remove it: `certlm.msc` > Trusted People >
+  Certificates > InviaAUnity-... > Delete.
+- Unity imports by itself only if **Auto Refresh** is on in *Preferences > Asset Pipeline*
+  and you're not in Play mode. Otherwise press Ctrl+R in Unity.
+- There's also right-click > **Send to** > **Unity project**, which opens the window directly.
+- Everything that happens is written to `%LOCALAPPDATA%\SendToUnity\log.txt`:
+  if something goes wrong, that's the file to look at (or to send).
 
-## Per chi lo modifica
+## For developers
 
-- `SendToUnity.cs` è tutto il programma. Deve restare compatibile con C# 5, perché lo compila
-  il compilatore incluso in Windows. `install.cmd` lo compila due volte: come programma e come
-  DLL del menu (`IExplorerCommand`), che Esplora risorse carica per mostrare le voci.
-  Su Windows 11 lo stesso comando lo serve `SendToUnity.exe --menu-server`, registrato da un
-  pacchetto con posizione esterna (sparse package) costruito e firmato con le API di Windows.
-- `tests/test-windows.ps1` lo installa e lo prova su una vera macchina Windows (GitHub Actions,
-  a ogni modifica di questa cartella): menu del tasto destro vero, finestre, copie, `.meta`,
-  file bloccati, progetto aperto in un finto Unity, disinstallazione. Il runner gira da
-  amministratore, quindi una parte del test crea un utente normale e rifà installazione, menu e
-  invio come lui.
+- `SendToUnity.cs` is the whole program. It must stay compatible with C# 5, because it is
+  compiled by the compiler included in Windows. `install.cmd` compiles it twice: as the program
+  and as the menu DLL (`IExplorerCommand`), which File Explorer loads to show the items.
+  On Windows 11 the same command is served by `SendToUnity.exe --menu-server`, registered through
+  a package with external location (sparse package) built and signed with the Windows APIs.
+- `tests/test-windows.ps1` installs it and tests it on a real Windows machine (GitHub Actions,
+  on every change): the real right-click menus, windows, copies, `.meta` files, locked files, a
+  project open in a fake Unity, uninstall. The runner is an administrator, so part of the test
+  creates a normal user and repeats install, menu and send as that user.

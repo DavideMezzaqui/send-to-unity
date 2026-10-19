@@ -3,7 +3,7 @@
 # di Esplora risorse, usa le finestre e controlla i file arrivati. Esce con 1 se un controllo fallisce.
 
 $ErrorActionPreference = 'Stop'
-$conflictTitle = 'File gi' + [char]0x00E0 + ' presenti'
+$conflictTitle = 'Files already there'
 
 if ($env:GITHUB_ACTIONS -ne 'true') {
     Write-Host 'Questo test modifica il menu del tasto destro e la lista di Unity Hub: va eseguito solo su GitHub Actions.'
@@ -21,7 +21,7 @@ $registry   = [Microsoft.Win32.Registry]::CurrentUser
 $fileMenu   = 'Software\Classes\*\shell\SendToUnity'
 $dirMenu    = 'Software\Classes\Directory\shell\SendToUnity'
 $classKey   = 'Software\Classes\CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}'
-$sendToLink = Join-Path ([Environment]::GetFolderPath('SendTo')) 'Progetto Unity.lnk'
+$sendToLink = Join-Path ([Environment]::GetFolderPath('SendTo')) 'Unity project.lnk'
 $script:failures = 0
 $fake = $null
 $normalUser = $false
@@ -207,7 +207,7 @@ function Open-ClassicMenu {
 
 # Testi della notifica finale (titolo | progetto e cartella | suggerimento)
 function Toast-Text([int]$timeoutMs = 15000) {
-    $toast = Find-AnyWindow 'Invia a Unity - notifica' '*' $timeoutMs
+    $toast = Find-AnyWindow 'Send to Unity - notification' '*' $timeoutMs
     if (-not $toast) { return '<nessuna notifica>' }
     (@(Get-Controls $toast | Where-Object { $_.Class -like '*STATIC*' } | ForEach-Object { $_.Text }) -join ' | ')
 }
@@ -261,7 +261,7 @@ function Click-UiElement($element) {
 # Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
 function Menu([string[]]$paths, $click = $null) {
     try {
-        $items = [ExplorerMenu]::Submenu($paths, 'Invia a Unity', $click)
+        $items = [ExplorerMenu]::Submenu($paths, 'Send to Unity', $click)
         if ([ExplorerMenu]::Info) { Note ('menu: ' + [ExplorerMenu]::Info) }
         if ($null -eq $items) { Note ('voci principali del menu: ' + ([ExplorerMenu]::TopItems -join ' | ')) }
         , $items
@@ -297,12 +297,12 @@ try {
         # su Windows 11 la voce arriva dal pacchetto, in tutti e due i menu: quella del registro sparisce
         $package = Get-AppxPackage -Name 'DAVFX.InviaAUnity*'
         Check ($null -ne $package) 'Windows 11: pacchetto del menu ridotto registrato'
-        if (-not $package) { Note ('dal log: ' + ((Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ -match 'menu ridotto|certificato' }) -join ' | ')) }
+        if (-not $package) { Note ('dal log: ' + ((Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ -match 'short menu|certificate' }) -join ' | ')) }
         Check ($null -eq $key -and $null -eq $registry.OpenSubKey($dirMenu)) 'Windows 11: nessuna voce doppia nel registro (vecchia voce compresa)'
     } else {
         Check ($null -ne $key) 'voce "Invia a Unity" sui file'
         if ($key) {
-            Check ($key.GetValue('MUIVerb') -eq '&Invia a Unity') 'testo della voce, con la I come scorciatoia'
+            Check ($key.GetValue('MUIVerb') -eq 'Send to &Unity') 'testo della voce, con la I come scorciatoia'
             Check ($null -eq $key.OpenSubKey('command')) 'vecchia voce sostituita'
             Check ($key.GetValue('ExplorerCommandHandler') -eq '{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}') 'la voce e'' il comando del menu dinamico'
         }
@@ -338,33 +338,33 @@ try {
     $items = Menu @($albedo)
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Note ('sottomenu: ' + (@($items) -join ' | '))
-    Check (@([ExplorerMenu]::TopItems | Where-Object { $_.Replace('&', '') -eq 'Invia a Unity' }).Count -le 1) 'una sola voce "Invia a Unity" nel menu'
+    Check (@([ExplorerMenu]::TopItems | Where-Object { $_.Replace('&', '') -eq 'Send to Unity' }).Count -le 1) 'una sola voce "Invia a Unity" nel menu'
     Check (@($items).Count -eq 4) 'sottomenu: 2 progetti, separatore, "Scegli progetto e cartella..." (il progetto sparito escluso)'
     Check (@($items)[0] -eq 'Gioco [Prova] && Co') 'primo il progetto usato piu di recente, con la & mostrata'
-    Check (@($items)[-1] -eq 'Scegli progetto e cartella...') 'ultima voce: Scegli progetto e cartella...'
+    Check (@($items)[-1] -eq 'Choose project and folder...') 'ultima voce: Scegli progetto e cartella...'
 
     Write-Host '--- 3. primo invio verso un progetto, dal menu: si apre la finestra'
     $items = Menu @($albedo, $normal) 'Gioco'
     Check ([ExplorerMenu]::Invoked) 'clic sulla voce del progetto'
-    $dialog = Find-AnyWindow 'Invia a Unity' 'WindowsForms10*'
+    $dialog = Find-AnyWindow 'Send to Unity' 'WindowsForms10*'
     Check ($null -ne $dialog) 'al primo invio verso un progetto si apre la finestra'
     if ($dialog) {
         Save-Shot $dialog '1-finestra'
         Show-Controls $dialog
         $folder = Find-FolderBox $dialog
         Set-Text $folder 'Packages/sbagliata'
-        Press (Find-Control $dialog '*BUTTON*' 'Invia')
-        $warning = Find-AnyWindow 'Invia a Unity' '#32770'
+        Press (Find-Control $dialog '*BUTTON*' 'Send')
+        $warning = Find-AnyWindow 'Send to Unity' '#32770'
         Check ($null -ne $warning) 'cartella fuori da Assets: compare un avviso'
         if ($warning) {
             Save-Shot $warning '2-avviso'
             Press (Find-MessageButton $warning 2)
         }
         Start-Sleep -Milliseconds 700
-        Check ($null -ne (Find-AnyWindow 'Invia a Unity' 'WindowsForms10*' 2000)) "dopo l'avviso la finestra resta aperta"
+        Check ($null -ne (Find-AnyWindow 'Send to Unity' 'WindowsForms10*' 2000)) "dopo l'avviso la finestra resta aperta"
         Set-Text $folder 'Assets/Textures/Rocce'
-        Press (Find-Control $dialog '*BUTTON*' 'Invia')
-        $toast = Find-AnyWindow 'Invia a Unity - notifica'
+        Press (Find-Control $dialog '*BUTTON*' 'Send')
+        $toast = Find-AnyWindow 'Send to Unity - notification'
         Check ($null -ne $toast) 'compare la notifica'
         if ($toast) { Save-Shot $toast '3-notifica' }
     }
@@ -380,7 +380,7 @@ try {
     $mark = Log-Mark
     $items = Menu $three 'Gioco'
     Check ([ExplorerMenu]::Invoked) 'clic sulla voce del progetto con 3 file'
-    $toast = Find-AnyWindow 'Invia a Unity - notifica'
+    $toast = Find-AnyWindow 'Send to Unity - notification'
     Check ($null -ne $toast) 'nessuna finestra, solo la notifica'
     Check (Wait-Idle) 'il programma si chiude da solo'
     $missing = @($three | Where-Object { -not (Exists (Join-Path $dest ([IO.Path]::GetFileName($_)))) })
@@ -400,7 +400,7 @@ try {
     $leaders = ([regex]::Matches((Log-Since $mark), 'leader to:')).Count
     Note "istanze che hanno copiato: $leaders su 40 avviate da Explorer"
     Check ($leaders -ge 1 -and $leaders -le 2) 'i file sono stati raccolti da una sola istanza (al massimo due)'
-    $toasts = ([regex]::Matches((Log-Since $mark), 'notifica: ')).Count
+    $toasts = ([regex]::Matches((Log-Since $mark), 'notification: ')).Count
     Check ($toasts -eq $leaders) "una sola notifica per invio, a copie finite (notifiche: $toasts)"
 
     # un secondo invio mentre la notifica del primo e' ancora visibile
@@ -408,7 +408,7 @@ try {
     $second = New-File (Join-Path $in 'subito\secondo.png') 'P2'
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p1), (Q $first))
-    Check ($null -ne (Find-Window $proc.Id 'Invia a Unity - notifica')) 'notifica del primo invio'
+    Check ($null -ne (Find-Window $proc.Id 'Send to Unity - notification')) 'notifica del primo invio'
     Start-Sleep -Seconds 2   # una persona impiega almeno questo per il secondo tasto destro
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $proc2 = Start-Tool @('--to', (Q $p1), (Q $second))
@@ -416,7 +416,7 @@ try {
     $elapsed = $watch.ElapsedMilliseconds
     Check ($elapsed -lt 2000) "un secondo invio mentre la notifica e' visibile arriva subito ($elapsed ms)"
     [void](Wait-Exit @($proc, $proc2))
-    $counts = @([regex]::Matches((Log-Since $mark), 'notifica: (\d+) copiati') | ForEach-Object { $_.Groups[1].Value })
+    $counts = @([regex]::Matches((Log-Since $mark), 'notification: (\d+) copied') | ForEach-Object { $_.Groups[1].Value })
     Check (($counts -join ',') -eq '1,1') "ogni invio ha la sua notifica con il suo conteggio ($($counts -join ','))"
 
     Write-Host '--- 5. file gia presenti'
@@ -426,7 +426,7 @@ try {
     Check ($null -ne $ask) 'chiede se sostituire un file gia presente'
     if ($ask) {
         Save-Shot $ask '4-sostituire'
-        Press (Find-Control $ask '*BUTTON*' 'Sostituisci')
+        Press (Find-Control $ask '*BUTTON*' 'Replace')
     }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') 'con Si il file viene sostituito'
@@ -434,17 +434,17 @@ try {
     [IO.File]::WriteAllText($albedo, 'A3')
     $proc = Start-Tool @('--to', (Q $p1), (Q $albedo))
     $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
-    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Salta questi') }
+    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Skip these') }
     $text = Toast-Text
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'roccia_albedo.png')) -eq 'A2') "con No il file resta com'era"
-    Check ($text -like 'Nessun file inviato: era gi* presente*') "la notifica dice che non e' arrivato niente ($text)"
+    Check ($text -like 'No files sent: it was already there*') "la notifica dice che non e' arrivato niente ($text)"
 
     # un file che sta gia' proprio nella cartella di destinazione
     $proc = Start-Tool @('--to', (Q $p1), (Q (Join-Path $dest 'roccia_albedo.png')))
     $text = Toast-Text
     [void](Wait-Exit $proc)
-    Check ($text -like 'Il file * gi* in questa cartella*') "file gia' nella cartella: lo dice la notifica ($text)"
+    Check ($text -like 'The file is already in this folder*') "file gia' nella cartella: lo dice la notifica ($text)"
 
     # Unity sta importando il file e lo tiene bloccato: il programma aspetta e riprova
     [IO.File]::WriteAllText($albedo, 'A4')
@@ -453,8 +453,8 @@ try {
     try {
         $proc = Start-Tool @('--to', (Q $p1), (Q $albedo))
         $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
-        if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Sostituisci') }
-        $progressWindow = Find-Window $proc.Id 'Invia a Unity - avanzamento' '*' 2500
+        if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Replace') }
+        $progressWindow = Find-Window $proc.Id 'Send to Unity - progress' '*' 2500
         Check ($null -ne $progressWindow) 'se la copia va per le lunghe compare la notifica di avanzamento'
         if ($progressWindow) { Save-Shot $progressWindow '9-avanzamento' }
     } finally { $lock.Dispose() }
@@ -482,7 +482,7 @@ try {
     New-File (Join-Path $flip 'frame_03.png') 'F3' | Out-Null
     $proc = Start-Tool @('--to', (Q $p1), (Q $flip))
     $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
-    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Salta questi') }
+    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Skip these') }
     [void](Wait-Exit $proc)
     Check (Exists (Join-Path $flipDest 'frame_03.png')) 'al secondo invio il file nuovo si aggiunge'
     Check (-not (Exists (Join-Path $flipDest 'Flipbook'))) 'nessuna cartella annidata (Flipbook dentro Flipbook)'
@@ -538,7 +538,7 @@ try {
     Check ($closedAt -ge 0 -and -not $icons[$closedAt]) 'nel menu il progetto chiuso non ha il pallino'
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p2), (Q $smoke))
-    $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
+    $dialog = Find-Window $proc.Id 'Send to Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '5-finestra-unity-aperto'
         $combo = Get-Controls $dialog | Where-Object { $_.Class -like '*COMBOBOX*' } | Sort-Object Top | Select-Object -First 1
@@ -549,11 +549,11 @@ try {
         [void][Win]::SendMessage($combo.Handle, 0x014F, [IntPtr]::Zero, $null)
         Start-Sleep -Milliseconds 300
         Set-Text (Find-FolderBox $dialog) 'Assets/VFX'
-        Press (Find-Control $dialog '*BUTTON*' 'Invia')
+        Press (Find-Control $dialog '*BUTTON*' 'Send')
     }
     [void](Wait-Exit $proc)
     $text = Log-Since $mark
-    Check ($text.Contains("progetto $p2 (aperto)")) 'progetto con Unity aperto riconosciuto'
+    Check ($text.Contains("project $p2 (open)")) 'progetto con Unity aperto riconosciuto'
     Check ((Read-File (Join-Path $p2 'Assets\VFX\fumo.png')) -eq 'S1') 'file arrivato nel progetto aperto'
     Check ([Win]::GetForegroundWindow() -eq $fakeHandle) "Unity portato in primo piano dopo l'invio"
 
@@ -566,7 +566,7 @@ try {
     [IO.File]::WriteAllText($smoke, 'S2')
     $proc = Start-Tool @('--to', (Q $p2), (Q $smoke))
     $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
-    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Sostituisci') }
+    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Replace') }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $p2 'Assets\VFX\fumo.png')) -eq 'S2') 'invio rapido verso il progetto aperto'
     Check ([Win]::GetForegroundWindow() -eq $fakeHandle) "Unity portato in primo piano anche con l'invio rapido"
@@ -574,13 +574,13 @@ try {
 
     Write-Host '--- 8. sposta, dalla voce "Scegli progetto e cartella..."'
     $moving = New-File (Join-Path $in 'da_spostare.png') 'M'
-    $items = Menu @($moving) 'Scegli progetto'
-    $dialog = Find-AnyWindow 'Invia a Unity' 'WindowsForms10*'
+    $items = Menu @($moving) 'Choose project'
+    $dialog = Find-AnyWindow 'Send to Unity' 'WindowsForms10*'
     if ($dialog) {
         Save-Shot $dialog '6-finestra-scegli'
-        Press (Find-Control $dialog '*BUTTON*' 'Sposta invece di copiare (gli originali vengono tolti)')
+        Press (Find-Control $dialog '*BUTTON*' 'Move instead of copy (the originals are removed)')
         Set-Text (Find-FolderBox $dialog) 'Assets/Spostati'
-        Press (Find-Control $dialog '*BUTTON*' 'Invia')
+        Press (Find-Control $dialog '*BUTTON*' 'Send')
     }
     [void](Wait-Idle)
     Check ((Read-File (Join-Path $p2 'Assets\Spostati\da_spostare.png')) -eq 'M') 'file spostato nel progetto aperto (proposto per primo)'
@@ -595,7 +595,7 @@ try {
     if ($explorer) {
         Open-ClassicMenu
         Shot-Screen '7-menu-classico'
-        Keys 'i' 1200
+        Keys 'u' 1200
         Shot-Screen '8-sottomenu'
         Keys '{ESC}' 300; Keys '{ESC}' 300; Keys '{ESC}' 300
         Start-Sleep -Seconds 4
@@ -604,7 +604,7 @@ try {
         # adesso la scelta vera: tasto menu, I, primo progetto (il piu' recente: Altro progetto)
         Select-InExplorer $explorer 'texture_vera.png'
         Open-ClassicMenu
-        Keys 'i' 1000
+        Keys 'u' 1000
         Keys '{RIGHT}' 500
         Keys '{ENTER}' 500
         [void](Wait-Idle)
@@ -629,7 +629,7 @@ try {
     [IO.File]::WriteAllText("$metaA.meta", 'GUID-B')
     $proc = Start-Tool @('--to', (Q $p1), (Q $metaA))
     $ask = Find-Window $proc.Id $conflictTitle 'WindowsForms10*'
-    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Sostituisci') }
+    if ($ask) { Press (Find-Control $ask '*BUTTON*' 'Replace') }
     [void](Wait-Exit $proc)
     Check ((Read-File (Join-Path $dest 'meta_a.png')) -eq 'MA2' -and (Read-File (Join-Path $dest 'meta_a.png.meta')) -eq 'GUID-A') 'sostituendo il file, il .meta del progetto resta (riferimenti salvi)'
 
@@ -659,11 +659,11 @@ try {
     [IO.File]::SetAttributes((Join-Path $kit 'Thumbs.db'), 'ReadOnly, Hidden, System')
     [IO.File]::SetAttributes((Join-Path $kit 'k1.png'), 'ReadOnly')
     $proc = Start-Tool @('--pick', (Q $kit))
-    $dialog = Find-Window $proc.Id 'Invia a Unity' 'WindowsForms10*'
+    $dialog = Find-Window $proc.Id 'Send to Unity' 'WindowsForms10*'
     if ($dialog) {
-        Press (Find-Control $dialog '*BUTTON*' 'Sposta invece di copiare (gli originali vengono tolti)')
+        Press (Find-Control $dialog '*BUTTON*' 'Move instead of copy (the originals are removed)')
         Set-Text (Find-FolderBox $dialog) 'Assets/Kits'
-        Press (Find-Control $dialog '*BUTTON*' 'Invia')
+        Press (Find-Control $dialog '*BUTTON*' 'Send')
     }
     [void](Wait-Exit $proc)
     $kits = Join-Path $p1 'Assets\Kits'
@@ -693,17 +693,17 @@ try {
     $clickFile = New-File (Join-Path $in 'clic.png') 'C'
     $mark = Log-Mark
     $proc = Start-Tool @('--to', (Q $p1), (Q $clickFile))
-    $toast = Find-Window $proc.Id 'Invia a Unity - notifica'
+    $toast = Find-Window $proc.Id 'Send to Unity - notification'
     Check ($null -ne $toast) 'compare la notifica'
     if ($toast) {
         [Win]::MoveTo($toast.Left + 20, $toast.Top + 10)
         Start-Sleep -Seconds 5
-        Check ($null -ne (Find-Window $proc.Id 'Invia a Unity - notifica' '*' 500)) 'con il mouse sopra, la notifica non sparisce'
+        Check ($null -ne (Find-Window $proc.Id 'Send to Unity - notification' '*' 500)) 'con il mouse sopra, la notifica non sparisce'
         Click-Window $toast
         [Win]::MoveTo(200, 200)
     }
     [void](Wait-Exit $proc)
-    Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'apro |non aperta' }) -join ' | '))
+    Note ('dal log: ' + (((Log-Since $mark) -split "`n" | Where-Object { $_ -match 'opening |not opened' }) -join ' | '))
     $window = Find-ExplorerWindow $kits
     Check ($null -ne $window) 'cliccando la notifica si apre la cartella del progetto'
     if ($window) {
@@ -738,7 +738,7 @@ try {
         if ($explorer) {
             Keys '+{F10}' 2500
             Shot-Screen '12-menu-ridotto'
-            $entry = Find-UiMenuItem 'Invia a Unity*'
+            $entry = Find-UiMenuItem 'Send to Unity*'
             Check ($null -ne $entry) 'nel menu ridotto c''e'' "Invia a Unity"'
             if ($entry) {
                 Click-UiElement $entry

@@ -35,14 +35,14 @@ try {
     Add-Type -Path (Join-Path $PSScriptRoot 'WinTest.cs') -ReferencedAssemblies System.Drawing, System.Windows.Forms
     $file = Join-Path $env:TEMP 'dal_menu.png'
     [IO.File]::WriteAllText($file, 'U')
-    $items = [ExplorerMenu]::Submenu(@($file), 'Invia a Unity', '')
+    $items = [ExplorerMenu]::Submenu(@($file), 'Send to Unity', '')
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Say ('sottomenu: ' + (@($items) -join ' | '))
     $at = [Array]::FindIndex([string[]]@($items), [Predicate[string]]{ param($t) $t -like 'Progetto Normale*Assets/Arrivati' })
     Check ($at -ge 0) 'il progetto compare nel menu con la sua cartella'
     Check ($at -ge 0 -and [ExplorerMenu]::Icons[$at]) 'il progetto aperto ha il pallino verde'
 
-    [void][ExplorerMenu]::Submenu(@($file), 'Invia a Unity', 'Progetto Normale')
+    [void][ExplorerMenu]::Submenu(@($file), 'Send to Unity', 'Progetto Normale')
     Check ([ExplorerMenu]::Invoked) 'clic sulla voce del progetto'
     $arrived = Join-Path $project 'Assets\Arrivati\dal_menu.png'
     $watch = [Diagnostics.Stopwatch]::StartNew()
