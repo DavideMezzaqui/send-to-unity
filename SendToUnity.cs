@@ -2140,11 +2140,12 @@ namespace SendToUnity
         public static int Run()
         {
             var services = new RegistrationServices();
-            int cookie = services.RegisterTypeForComClients(typeof(ModernMenuCommand),
+            // each package starts its own copy: it serves only the item of that package
+            string package = Native.CurrentPackage() ?? "";
+            Type served = package.Contains(".Quick.") ? typeof(ModernQuickCommand) : typeof(ModernMenuCommand);
+            int cookie = services.RegisterTypeForComClients(served,
                 RegistrationClassContext.LocalServer, RegistrationConnectionType.MultipleUse);
-            int quickCookie = services.RegisterTypeForComClients(typeof(ModernQuickCommand),
-                RegistrationClassContext.LocalServer, RegistrationConnectionType.MultipleUse);
-            Log.Write("short menu: ready");
+            Log.Write("short menu: ready (" + served.Name + ", " + package + ")");
             var timer = new System.Windows.Forms.Timer { Interval = 5000 };
             timer.Tick += (s, e) =>
             {
@@ -2153,7 +2154,6 @@ namespace SendToUnity
             timer.Start();
             Application.Run();
             services.UnregisterTypeForComClients(cookie);
-            services.UnregisterTypeForComClients(quickCookie);
             return 0;
         }
     }
@@ -4048,6 +4048,23 @@ namespace SendToUnity
         [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
         [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr window, string app, string idList);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetCurrentPackageFullName(ref int length, StringBuilder name);
+
+        // Full name of the package this process runs in (null outside a package)
+        public static string CurrentPackage()
+        {
+            try
+            {
+                int length = 0;
+                if (GetCurrentPackageFullName(ref length, null) != 122) return null;   // ERROR_INSUFFICIENT_BUFFER
+                var name = new StringBuilder(length);
+                return GetCurrentPackageFullName(ref length, name) == 0 ? name.ToString() : null;
+            }
+            catch (Exception)
+            {
+                return null;   // Windows without packages
+            }
+        }
 
         // Dark title bar (Windows 10 2004 and later); older versions just ignore it
         public static void DarkTitleBar(IntPtr window)
