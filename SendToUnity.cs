@@ -87,6 +87,12 @@ namespace SendToUnity
                 case "--trust":
                     ModernMenu.TrustCertificate(list[1], list.Count > 2 ? list[2] : "");
                     return 0;
+                case "--hotkey":
+                    return HotkeyService.Run();
+                case "--settings":
+                    Ui.Init();
+                    using (var dialog = new SettingsDialog()) dialog.ShowDialog();
+                    return 0;
             }
 
             // --to <project> = click on a project name in the menu; --pick = "Choose project and folder..."
@@ -113,9 +119,9 @@ namespace SendToUnity
             var files = list.Where(f => f.Trim().Length > 0).ToList();
             if (files.Count == 0)
             {
-                Ui.Info("Send to Unity is used from the right-click menu: select files or folders in File Explorer, " +
-                        "then right-click > Send to Unity.\n\nOn Windows 11, if you don't see it right away, it's under " +
-                        "\"Show more options\" (or Shift + right-click).");
+                // started by hand (double-click on the program): the settings
+                Ui.Init();
+                using (var dialog = new SettingsDialog()) dialog.ShowDialog();
                 return 0;
             }
 
@@ -1279,6 +1285,15 @@ namespace SendToUnity
         public List<string> ExtraProjects { get; set; }
         public List<ProjectPrefs> Projects { get; set; }
         public string Theme { get; set; }   // "dark" (default), "light" or "system" (follows Windows)
+        public string Hotkey { get; set; }  // null = default (Ctrl+Alt+U), "" = no shortcut
+        public bool HideQuickItem { get; set; }   // hides "Send to <last project>" from the main menu
+
+        public const string DefaultHotkey = "Ctrl+Alt+U";
+
+        public string EffectiveHotkey
+        {
+            get { return Hotkey ?? DefaultHotkey; }
+        }
 
         public Settings()
         {
@@ -1411,10 +1426,18 @@ namespace SendToUnity
         const string DllPrefix = "SendToUnityMenu-";
         public const int MaxProjects = 10;
 
+        public const string QuickClassId = "{8B2F4C6D-1E3A-4F5B-9C7D-0A1B2C3D4E5F}";
+        const string QuickClassKey = @"Software\Classes\CLSID\" + QuickClassId;
+
         static readonly string[] Keys =
         {
             @"Software\Classes\*\shell\SendToUnity",
             @"Software\Classes\Directory\shell\SendToUnity"
+        };
+        static readonly string[] QuickKeys =
+        {
+            @"Software\Classes\*\shell\SendToUnityQuick",
+            @"Software\Classes\Directory\shell\SendToUnityQuick"
         };
 
         public static string OpenIcon
@@ -1437,33 +1460,12 @@ namespace SendToUnity
             if (dll == null || !File.Exists(dll)) throw new FileNotFoundException("The menu DLL is missing: run install.cmd again.");
             dll = Path.GetFullPath(dll);
 
-            Registry.CurrentUser.DeleteSubKeyTree(ClassKey, false);
-            using (var key = Registry.CurrentUser.CreateSubKey(ClassKey))
-            {
-                key.SetValue("", App.Name);
-                using (var server = key.CreateSubKey("InprocServer32"))
-                {
-                    server.SetValue("", "mscoree.dll");
-                    server.SetValue("ThreadingModel", "Apartment");
-                    server.SetValue("Class", typeof(MenuCommand).FullName);
-                    server.SetValue("Assembly", Path.GetFileNameWithoutExtension(dll) + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null");
-                    server.SetValue("RuntimeVersion", "v4.0.30319");
-                    server.SetValue("CodeBase", "file:///" + dll.Replace('\\', '/'));
-                }
-            }
+            RegisterClass(ClassKey, typeof(MenuCommand), dll);
+            RegisterClass(QuickClassKey, typeof(QuickCommand), dll);
 
             string hub = HubExe();
-            foreach (string keyPath in Keys)
-            {
-                Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
-                if (ModernMenu.Active) continue;   // the item comes from the package, in both menus
-                using (var key = Registry.CurrentUser.CreateSubKey(keyPath))
-                {
-                    key.SetValue("MUIVerb", App.MenuTitle);   // right-click, then U
-                    key.SetValue("ExplorerCommandHandler", ClassId);
-                    if (hub != null) key.SetValue("Icon", hub + ",0");
-                }
-            }
+            AddVerbs(Keys, App.MenuTitle, ClassId, hub);   // right-click, then U
+            AddVerbs(QuickKeys, "Send to the last project", QuickClassId, hub);
 
             foreach (string old in Dlls())
             {
@@ -1474,10 +1476,44 @@ namespace SendToUnity
             Log.Write("menu registered: " + dll);
         }
 
+        static void RegisterClass(string classKey, Type type, string dll)
+        {
+            Registry.CurrentUser.DeleteSubKeyTree(classKey, false);
+            using (var key = Registry.CurrentUser.CreateSubKey(classKey))
+            {
+                key.SetValue("", App.Name);
+                using (var server = key.CreateSubKey("InprocServer32"))
+                {
+                    server.SetValue("", "mscoree.dll");
+                    server.SetValue("ThreadingModel", "Apartment");
+                    server.SetValue("Class", type.FullName);
+                    server.SetValue("Assembly", Path.GetFileNameWithoutExtension(dll) + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null");
+                    server.SetValue("RuntimeVersion", "v4.0.30319");
+                    server.SetValue("CodeBase", "file:///" + dll.Replace('\\', '/'));
+                }
+            }
+        }
+
+        static void AddVerbs(string[] keys, string title, string classId, string hub)
+        {
+            foreach (string keyPath in keys)
+            {
+                Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
+                if (ModernMenu.Active) continue;   // the items come from the package, in both menus
+                using (var key = Registry.CurrentUser.CreateSubKey(keyPath))
+                {
+                    key.SetValue("MUIVerb", title);
+                    key.SetValue("ExplorerCommandHandler", classId);
+                    if (hub != null) key.SetValue("Icon", hub + ",0");
+                }
+            }
+        }
+
         public static void Remove()
         {
-            foreach (string keyPath in Keys) Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
+            foreach (string keyPath in Keys.Concat(QuickKeys)) Registry.CurrentUser.DeleteSubKeyTree(keyPath, false);
             Registry.CurrentUser.DeleteSubKeyTree(ClassKey, false);
+            Registry.CurrentUser.DeleteSubKeyTree(QuickClassKey, false);
             // the one loaded by Explorer can't be deleted but can be moved: the folder stays clean
             foreach (string dll in Dlls())
             {
@@ -1742,13 +1778,18 @@ namespace SendToUnity
                 Log.Write("menu: projects not read: " + ex.Message);
             }
             list.Add(new ProjectCommand("Choose project and folder...", new[] { "--pick" }, false, count > 0));
+            list.Add(new ProjectCommand("Settings...", new[] { "--settings" }, false, false));
             return list;
         }
 
         // Starts the program with the file list in a temporary file
         public static void Launch(string[] arguments, IShellItemArray items)
         {
-            var paths = ItemPaths(items);
+            Start(arguments, ItemPaths(items));
+        }
+
+        public static void Start(string[] arguments, List<string> paths)
+        {
             if (paths.Count == 0) return;
             string list = Path.Combine(Path.GetTempPath(), "SendToUnity-" + Guid.NewGuid().ToString("N") + ".txt");
             File.WriteAllLines(list, paths, new UTF8Encoding(false));
@@ -1855,7 +1896,10 @@ namespace SendToUnity
             MenuServer.Touch();
             try
             {
-                MenuCommand.Launch(arguments, items);
+                if (arguments[0] == "--settings")
+                    Process.Start(new ProcessStartInfo(App.ExePath, "--settings") { UseShellExecute = false, WorkingDirectory = App.Dir }).Dispose();
+                else
+                    MenuCommand.Launch(arguments, items);
                 return MenuCommand.Ok;
             }
             catch (Exception ex)
@@ -1923,6 +1967,145 @@ namespace SendToUnity
         }
     }
 
+    // "Send to Gioco  →  Assets/Kits": the last project and folder used, right in the main menu,
+    // without opening the submenu. Hidden if nothing was sent yet or if turned off in the settings.
+    [ComVisible(true), Guid("8B2F4C6D-1E3A-4F5B-9C7D-0A1B2C3D4E5F"), ClassInterface(ClassInterfaceType.None)]
+    public class QuickCommand : IExplorerCommand
+    {
+        const uint Hidden = 0x2;   // ECS_HIDDEN
+
+        public int GetTitle(IShellItemArray items, out IntPtr title)
+        {
+            MenuServer.Touch();
+            var target = QuickTarget.Get();
+            title = Marshal.StringToCoTaskMemUni(target == null ? App.Name : QuickTarget.Label(target, true));
+            return MenuCommand.Ok;
+        }
+
+        public int GetIcon(IShellItemArray items, out IntPtr icon)
+        {
+            icon = IntPtr.Zero;
+            var target = QuickTarget.Get();
+            if (target != null && Projects.IsOpen(target.Path) && File.Exists(ShellMenu.OpenIcon))
+            {
+                icon = Marshal.StringToCoTaskMemUni(ShellMenu.OpenIcon);
+                return MenuCommand.Ok;
+            }
+            string hub = ShellMenu.HubExe();
+            if (hub == null) return MenuCommand.NotImplemented;
+            icon = Marshal.StringToCoTaskMemUni(hub + ",0");
+            return MenuCommand.Ok;
+        }
+
+        public int GetToolTip(IShellItemArray items, out IntPtr tip)
+        {
+            tip = IntPtr.Zero;
+            return MenuCommand.NotImplemented;
+        }
+
+        public int GetCanonicalName(out Guid name)
+        {
+            name = GetType().GUID;
+            return MenuCommand.Ok;
+        }
+
+        public int GetState(IShellItemArray items, bool okToBeSlow, out uint state)
+        {
+            MenuServer.Touch();
+            state = QuickTarget.Get() == null ? Hidden : 0;
+            return MenuCommand.Ok;
+        }
+
+        public int Invoke(IShellItemArray items, IntPtr bindContext)
+        {
+            MenuServer.Touch();
+            try
+            {
+                var target = QuickTarget.Get();
+                MenuCommand.Launch(target == null ? new[] { "--pick" } : new[] { "--to", target.Path }, items);
+                return MenuCommand.Ok;
+            }
+            catch (Exception ex)
+            {
+                Log.Write("menu: launch failed: " + ex);
+                return Marshal.GetHRForException(ex);
+            }
+        }
+
+        public int GetFlags(out uint flags)
+        {
+            flags = 0;
+            return MenuCommand.Ok;
+        }
+
+        public int EnumSubCommands(out IEnumExplorerCommand commands)
+        {
+            commands = null;
+            return MenuCommand.NotImplemented;
+        }
+    }
+
+    // The last project and folder used: target of the quick menu item and of the keyboard shortcut
+    static class QuickTarget
+    {
+        public class Target
+        {
+            public string Path;
+            public string Name;
+            public string Folder;
+        }
+
+        static readonly object sync = new object();
+        static Target cached;
+        static string cachedStamp;
+        static DateTime cachedAt;
+
+        public static Target Get()
+        {
+            string stamp;
+            try { stamp = File.GetLastWriteTimeUtc(System.IO.Path.Combine(App.Dir, "settings.json")).Ticks.ToString(); }
+            catch (Exception) { stamp = ""; }
+            lock (sync)
+            {
+                if (cachedStamp == stamp && DateTime.UtcNow - cachedAt < TimeSpan.FromSeconds(30)) return cached;
+                cached = Find();
+                cachedStamp = stamp;
+                cachedAt = DateTime.UtcNow;
+                return cached;
+            }
+        }
+
+        static Target Find()
+        {
+            try
+            {
+                var settings = Settings.Load();
+                if (settings.HideQuickItem) return null;
+                foreach (var prefs in settings.Projects.Where(p => p.Folder != null).OrderByDescending(p => p.LastUsed))
+                {
+                    // a network drive that isn't there would block the menu: it's trusted as it is
+                    if (!Paths.IsNetwork(prefs.Path) && !Projects.IsUnityProject(prefs.Path)) continue;
+                    string error;
+                    string folder = Folders.Clean(prefs.Folder, out error);
+                    if (folder == null) continue;
+                    return new Target { Path = prefs.Path, Name = System.IO.Path.GetFileName(prefs.Path), Folder = folder };
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("quick item: " + ex.Message);
+            }
+            return null;
+        }
+
+        public static string Label(Target target, bool menu)
+        {
+            string name = menu ? ShellMenu.Escape(target.Name) : target.Name;
+            string folder = menu ? ShellMenu.Escape(target.Folder) : target.Folder;
+            return "Send to " + name + "   →  " + folder;
+        }
+    }
+
     // ------------------------------------------------------------------ Windows 11 short menu
     // Only commands from "packaged" programs appear in the short menu. A lightweight package
     // (sparse package) with the manifest and a logo is enough: the files stay in the program
@@ -1936,6 +2119,11 @@ namespace SendToUnity
     // Windows shows it in both menus, so with the package active the registry item is removed.
     [ComVisible(true), Guid("3C8E5A21-7D4F-4B6A-9E1C-2F5D8A0B7C64"), ClassInterface(ClassInterfaceType.None)]
     public class ModernMenuCommand : MenuCommand
+    {
+    }
+
+    [ComVisible(true), Guid("5D7E9F1A-2B3C-4D5E-8F6A-7B8C9D0E1F2A"), ClassInterface(ClassInterfaceType.None)]
+    public class ModernQuickCommand : QuickCommand
     {
     }
 
@@ -1954,6 +2142,8 @@ namespace SendToUnity
             var services = new RegistrationServices();
             int cookie = services.RegisterTypeForComClients(typeof(ModernMenuCommand),
                 RegistrationClassContext.LocalServer, RegistrationConnectionType.MultipleUse);
+            int quickCookie = services.RegisterTypeForComClients(typeof(ModernQuickCommand),
+                RegistrationClassContext.LocalServer, RegistrationConnectionType.MultipleUse);
             Log.Write("short menu: ready");
             var timer = new System.Windows.Forms.Timer { Interval = 5000 };
             timer.Tick += (s, e) =>
@@ -1963,6 +2153,7 @@ namespace SendToUnity
             timer.Start();
             Application.Run();
             services.UnregisterTypeForComClients(cookie);
+            services.UnregisterTypeForComClients(quickCookie);
             return 0;
         }
     }
@@ -2229,6 +2420,7 @@ namespace SendToUnity
         static string Manifest()
         {
             string clsid = typeof(ModernMenuCommand).GUID.ToString().ToUpperInvariant();
+            string quick = typeof(ModernQuickCommand).GUID.ToString().ToUpperInvariant();
             return
 @"<?xml version=""1.0"" encoding=""utf-8""?>
 <Package xmlns=""http://schemas.microsoft.com/appx/manifest/foundation/windows10""
@@ -2267,9 +2459,11 @@ namespace SendToUnity
           <desktop4:FileExplorerContextMenus>
             <desktop5:ItemType Type=""*"">
               <desktop5:Verb Id=""SendToUnity"" Clsid=""" + clsid + @""" />
+              <desktop5:Verb Id=""SendToUnityQuick"" Clsid=""" + quick + @""" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=""Directory"">
               <desktop5:Verb Id=""SendToUnity"" Clsid=""" + clsid + @""" />
+              <desktop5:Verb Id=""SendToUnityQuick"" Clsid=""" + quick + @""" />
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
@@ -2277,6 +2471,7 @@ namespace SendToUnity
           <com:ComServer>
             <com:ExeServer Executable=""SendToUnity.exe"" Arguments=""--menu-server"" DisplayName=""Send to Unity"">
               <com:Class Id=""" + clsid + @""" DisplayName=""Send to Unity"" />
+              <com:Class Id=""" + quick + @""" DisplayName=""Send to Unity (last project)"" />
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>
@@ -2490,6 +2685,421 @@ namespace SendToUnity
         }
     }
 
+    // ------------------------------------------------------------------ keyboard shortcut
+    // SendToUnity.exe --hotkey starts with Windows and stays in the background (no window, almost no
+    // memory). With the shortcut (Ctrl+Alt+U unless changed) the files selected in the File Explorer
+    // window in front are sent to the last project and folder used. Any mouse with programmable
+    // buttons (Logi Options+, Razer Synapse...) can press the shortcut for you.
+
+    static class HotkeyService
+    {
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string RunValue = "SendToUnity";
+        const string ReloadEvent = @"Local\SendToUnity_hotkey_reload";
+        const string QuitEvent = @"Local\SendToUnity_hotkey_quit";
+
+        public static void Install()
+        {
+            using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
+                key.SetValue(RunValue, Paths.Quote(App.ExePath) + " --hotkey");
+            Start();
+        }
+
+        public static void Uninstall()
+        {
+            using (var key = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                if (key != null) key.DeleteValue(RunValue, false);
+            Signal(QuitEvent);
+        }
+
+        // Starts it if it isn't running; if it is, it rereads the settings
+        public static void Start()
+        {
+            if (Signal(ReloadEvent)) return;
+            try
+            {
+                // ShellExecute: the new process doesn't inherit the handles (and the console) of whoever starts it
+                Process.Start(new ProcessStartInfo(App.ExePath, "--hotkey") { UseShellExecute = true, WorkingDirectory = App.Dir }).Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Write("shortcut: not started: " + ex.Message);
+            }
+        }
+
+        static bool Signal(string name)
+        {
+            try
+            {
+                using (var e = EventWaitHandle.OpenExisting(name))
+                {
+                    e.Set();
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        public static int Run()
+        {
+            using (var mutex = new Mutex(false, @"Local\SendToUnity_hotkey"))
+            {
+                bool owned;
+                try { owned = mutex.WaitOne(0); }
+                catch (AbandonedMutexException) { owned = true; }
+                if (!owned) return 0;   // already running
+
+                Ui.Init();
+                using (var reload = new EventWaitHandle(false, EventResetMode.AutoReset, ReloadEvent))
+                using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEvent))
+                using (var window = new HotkeyWindow())
+                {
+                    window.Load();
+                    var watcher = new Thread(() =>
+                    {
+                        while (true)
+                        {
+                            int which = WaitHandle.WaitAny(new WaitHandle[] { reload, quit });
+                            try
+                            {
+                                if (which == 1) { window.BeginInvoke(new MethodInvoker(window.Close)); return; }
+                                window.BeginInvoke(new MethodInvoker(window.Load));
+                            }
+                            catch (Exception) { return; }
+                        }
+                    });
+                    watcher.IsBackground = true;
+                    watcher.Start();
+                    Application.Run(window);
+                }
+                return 0;
+            }
+        }
+    }
+
+    // Invisible window that receives the shortcut
+    class HotkeyWindow : Form
+    {
+        const int Id = 1;
+        string registered;
+
+        public HotkeyWindow()
+        {
+            ShowInTaskbar = false;
+            FormBorderStyle = FormBorderStyle.None;
+            Size = new Size(0, 0);
+            CreateHandle();
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            base.SetVisibleCore(false);   // never shown
+        }
+
+        public void Load()
+        {
+            Native.UnregisterHotKey(Handle, Id);
+            registered = null;
+            string text = Settings.Load().EffectiveHotkey;
+            if (text.Length == 0)
+            {
+                Log.Write("shortcut: off");
+                return;
+            }
+            int modifiers;
+            Keys key;
+            if (!Shortcut.TryParse(text, out modifiers, out key))
+            {
+                Log.Write("shortcut: not valid: " + text);
+                return;
+            }
+            if (Native.RegisterHotKey(Handle, Id, modifiers | 0x4000, (int)key))   // MOD_NOREPEAT
+            {
+                registered = text;
+                Log.Write("shortcut: " + text);
+            }
+            else
+            {
+                Log.Write("shortcut: " + text + " already used by another program");
+                Notify(text + " is used by another program", "Choose another shortcut in Send to Unity > Settings");
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0312 && registered != null)   // WM_HOTKEY
+            {
+                try { Pressed(); }
+                catch (Exception ex) { Log.Write("shortcut: " + ex); }
+            }
+            base.WndProc(ref m);
+        }
+
+        void Pressed()
+        {
+            List<string> files = ExplorerWindows.SelectionOf(Native.GetForeground());
+            if (files == null)
+            {
+                Notify("Select files in File Explorer first", "Then press " + registered + " to send them to Unity");
+                return;
+            }
+            if (files.Count == 0)
+            {
+                Notify("Nothing selected", "Select the files to send in File Explorer");
+                return;
+            }
+            var target = QuickTarget.Get();
+            Log.Write("shortcut: " + files.Count + " items to " + (target == null ? "(choose)" : target.Path));
+            MenuCommand.Start(target == null ? new[] { "--pick" } : new[] { "--to", target.Path }, files);
+        }
+
+        static void Notify(string title, string detail)
+        {
+            var toast = new Toast(title, detail, null, null, null, null);
+            toast.FormClosed += delegate { toast.Dispose(); };
+            toast.Show();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (IsHandleCreated) Native.UnregisterHotKey(Handle, Id);
+            base.Dispose(disposing);
+        }
+    }
+
+    // "Ctrl+Alt+U" <-> modifiers and key for RegisterHotKey
+    static class Shortcut
+    {
+        public static bool TryParse(string text, out int modifiers, out Keys key)
+        {
+            modifiers = 0;
+            key = Keys.None;
+            foreach (string raw in text.Split('+'))
+            {
+                string part = raw.Trim();
+                if (part.Length == 0) return false;
+                switch (part.ToLowerInvariant())
+                {
+                    case "ctrl": case "control": modifiers |= 0x2; continue;
+                    case "alt": modifiers |= 0x1; continue;
+                    case "shift": modifiers |= 0x4; continue;
+                    case "win": modifiers |= 0x8; continue;
+                }
+                if (key != Keys.None) return false;
+                if (part.Length == 1 && char.IsDigit(part[0])) part = "D" + part;
+                if (!Enum.TryParse(part, true, out key)) return false;
+            }
+            // a shortcut without modifiers would steal a normal key from every program (F-keys aside)
+            bool function = key >= Keys.F1 && key <= Keys.F24;
+            return key != Keys.None && (modifiers != 0 || function);
+        }
+
+        public static string Format(Keys modifiers, Keys key)
+        {
+            var parts = new List<string>();
+            if ((modifiers & Keys.Control) != 0) parts.Add("Ctrl");
+            if ((modifiers & Keys.Alt) != 0) parts.Add("Alt");
+            if ((modifiers & Keys.Shift) != 0) parts.Add("Shift");
+            string name = key.ToString();
+            if (name.Length == 2 && name[0] == 'D' && char.IsDigit(name[1])) name = name.Substring(1);
+            parts.Add(name);
+            return string.Join("+", parts);
+        }
+    }
+
+    // ------------------------------------------------------------------ settings window
+
+    class SettingsDialog : Form
+    {
+        readonly TextBox shortcutBox = new TextBox();
+        readonly CheckBox quickCheck = new CheckBox();
+        readonly ComboBox themeCombo = new ComboBox();
+        string shortcut;
+
+        static readonly string[] Themes = { "dark", "light", "system" };
+
+        public SettingsDialog()
+        {
+            var settings = Settings.Load();
+            shortcut = settings.EffectiveHotkey;
+
+            Name = "SettingsDialog";
+            Text = App.Name + " - Settings";
+            Font = SystemFonts.MessageBoxFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowIcon = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            TopMost = true;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+            int width = Ui.S(420);
+            var grid = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                Padding = new Padding(Ui.S(16)),
+                Margin = Padding.Empty
+            };
+
+            var target = QuickTarget.Get();
+            grid.Controls.Add(Caption("Keyboard shortcut", 0));
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+            shortcutBox.Name = "shortcutBox";
+            shortcutBox.AccessibleName = "Keyboard shortcut";
+            shortcutBox.ReadOnly = true;
+            shortcutBox.Width = Ui.S(220);
+            shortcutBox.Margin = new Padding(0, 0, Ui.S(6), 0);
+            shortcutBox.Text = Display(shortcut);
+            shortcutBox.KeyDown += CaptureShortcut;
+            shortcutBox.PreviewKeyDown += (s, e) => e.IsInputKey = true;   // Tab, arrows and Enter become part of the shortcut too
+            var clear = new Button { Name = "clearButton", Text = "None", AutoSize = true, Margin = Padding.Empty };
+            clear.Click += delegate
+            {
+                shortcut = "";
+                shortcutBox.Text = Display(shortcut);
+            };
+            row.Controls.Add(shortcutBox);
+            row.Controls.Add(clear);
+            grid.Controls.Add(row);
+            grid.Controls.Add(Note("Click the box and press the keys. It sends the files selected in File Explorer to " +
+                (target == null ? "the last project and folder used." : target.Name + "  ›  " + target.Folder + " (the last used)."), width));
+            grid.Controls.Add(Note(MouseHint(), width));
+
+            quickCheck.Name = "quickCheck";
+            quickCheck.Text = "Show \"Send to <last project>\" in the right-click menu";
+            quickCheck.AutoSize = true;
+            quickCheck.Checked = !settings.HideQuickItem;
+            quickCheck.Margin = new Padding(0, Ui.S(16), 0, 0);
+            grid.Controls.Add(quickCheck);
+
+            grid.Controls.Add(Caption("Theme", Ui.S(16)));
+            themeCombo.Name = "themeCombo";
+            themeCombo.AccessibleName = "Theme";
+            themeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            themeCombo.Width = Ui.S(220);
+            themeCombo.Margin = Padding.Empty;
+            themeCombo.Items.AddRange(new object[] { "Dark", "Light", "Same as Windows" });
+            int theme = Array.IndexOf(Themes, (settings.Theme ?? "dark").Trim().ToLowerInvariant());
+            themeCombo.SelectedIndex = theme < 0 ? 0 : theme;
+            grid.Controls.Add(themeCombo);
+            grid.Controls.Add(Note("The new theme is used from the next window.", width));
+
+            var save = new Button { Name = "saveButton", Text = "Save", DialogResult = DialogResult.OK, AutoSize = true };
+            var cancel = new Button { Name = "cancelButton", Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
+            save.MinimumSize = cancel.MinimumSize = new Size(Ui.S(92), 0);
+            cancel.Margin = new Padding(Ui.S(8), 0, 0, 0);
+            save.Margin = Padding.Empty;
+            var buttons = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.RightToLeft,
+                AutoSize = true,
+                WrapContents = false,
+                Anchor = AnchorStyles.Right,
+                Margin = new Padding(0, Ui.S(18), 0, 0)
+            };
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(save);
+            save.TabIndex = 0;
+            cancel.TabIndex = 1;
+            grid.Controls.Add(buttons);
+
+            Controls.Add(grid);
+            AcceptButton = save;
+            CancelButton = cancel;
+            ActiveControl = save;
+            FormClosing += (s, e) =>
+            {
+                if (DialogResult == DialogResult.OK) Save();
+            };
+            Shown += delegate
+            {
+                if (!Native.BringToFront(Handle)) Activate();
+            };
+            Look.Apply(this);
+        }
+
+        static string Display(string text)
+        {
+            return text.Length == 0 ? "(none)" : text;
+        }
+
+        void CaptureShortcut(object sender, KeyEventArgs e)
+        {
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+            var key = e.KeyCode;
+            if (key == Keys.ControlKey || key == Keys.ShiftKey || key == Keys.Menu || key == Keys.LWin || key == Keys.RWin) return;
+            string text = Shortcut.Format(e.Modifiers, key);
+            int modifiers;
+            Keys parsed;
+            if (!Shortcut.TryParse(text, out modifiers, out parsed))
+            {
+                shortcutBox.Text = "Add Ctrl, Alt or Shift (or use F1-F24)";
+                return;
+            }
+            shortcut = text;
+            shortcutBox.Text = text;
+        }
+
+        void Save()
+        {
+            string theme = Themes[Math.Max(0, themeCombo.SelectedIndex)];
+            bool hide = !quickCheck.Checked;
+            string chosen = shortcut;
+            try
+            {
+                Settings.Update(s =>
+                {
+                    s.Hotkey = chosen == Settings.DefaultHotkey ? null : chosen;
+                    s.HideQuickItem = hide;
+                    s.Theme = theme == "dark" ? null : theme;
+                });
+                HotkeyService.Start();
+                Log.Write("settings saved: shortcut " + Display(chosen) + ", quick item " + (hide ? "hidden" : "shown") + ", theme " + theme);
+            }
+            catch (Exception ex)
+            {
+                Ui.Error("Settings not saved: " + ex.Message);
+            }
+        }
+
+        // Mouse software (Logitech above all) can press the shortcut with a button
+        static string MouseHint()
+        {
+            bool logi = Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "LogiOptionsPlus")) ||
+                        Process.GetProcessesByName("logioptionsplus_agent").Length > 0;
+            if (logi)
+                return "Logi Options+ found: open it, choose a mouse button > Keyboard shortcut and press this shortcut. " +
+                       "Tip: add it as an app-specific setting for File Explorer, so the button keeps its usual job elsewhere.";
+            return "Mouse with programmable buttons (Logitech, Razer, ...)? In its software, assign this shortcut to a button.";
+        }
+
+        static Label Caption(string text, int top)
+        {
+            return new Label { Text = text, AutoSize = true, Margin = new Padding(0, top, 0, Ui.S(4)) };
+        }
+
+        static Label Note(string text, int width)
+        {
+            return new Label
+            {
+                Text = text,
+                AutoSize = true,
+                UseMnemonic = false,
+                MaximumSize = new Size(width, 0),
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, Ui.S(6), 0, 0)
+            };
+        }
+    }
+
     static class Installer
     {
         static string SendToLink
@@ -2509,6 +3119,7 @@ namespace SendToUnity
             ShellMenu.SaveOpenIcon();
             ModernMenu.Install();
             ShellMenu.Register(dll);
+            HotkeyService.Install();
             // "Send to" opens the choice window directly
             LinkFile.Create(SendToLink, App.ExePath, "--pick", ShellMenu.HubExe());
             Log.Write("installed: " + App.ExePath);
@@ -2516,6 +3127,7 @@ namespace SendToUnity
 
         public static void Uninstall()
         {
+            HotkeyService.Uninstall();
             ShellMenu.Remove();
             ModernMenu.Remove();
             TryDelete(SendToLink);
@@ -3463,6 +4075,22 @@ namespace SendToUnity
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr window, int id, int modifiers, int key);
+        [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr window, int id);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
+        [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, int flags);
+
+        public static IntPtr GetForeground()
+        {
+            return GetAncestor(GetForegroundWindow(), 2);   // GA_ROOT
+        }
+
+        public static string WindowText(IntPtr window)
+        {
+            var text = new StringBuilder(512);
+            GetWindowText(window, text, text.Capacity);
+            return text.ToString();
+        }
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
         [DllImport("user32.dll")] static extern bool AttachThreadInput(uint thread, uint otherThread, bool attach);
         [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -3595,6 +4223,39 @@ namespace SendToUnity
                 Thread.Sleep(200);
             }
             return stableSince >= 0;
+        }
+
+        // Files selected in the File Explorer window (null if the window isn't File Explorer).
+        // With tabs (Windows 11) every tab has the same window: the one in front is the one in the title.
+        public static List<string> SelectionOf(IntPtr window)
+        {
+            object shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+            object windows = Call(shell, "Windows");
+            int count = (int)Get(windows, "Count");
+            string title = Native.WindowText(window);
+            object best = null;
+            for (int i = 0; i < count; i++)
+            {
+                try
+                {
+                    object explorer = Call(windows, "Item", i);
+                    if (explorer == null || new IntPtr(Convert.ToInt64(Get(explorer, "HWND"))) != window) continue;
+                    object view = Get(explorer, "Document");
+                    string name = (string)Get(Get(view, "Folder"), "Title");
+                    if (best == null || title == name || title.StartsWith(name + " - ")) best = view;
+                }
+                catch (Exception) { }   // windows that don't show folders or that are closing
+            }
+            if (best == null) return null;
+            var files = new List<string>();
+            object items = Call(best, "SelectedItems");
+            int selected = (int)Get(items, "Count");
+            for (int i = 0; i < selected; i++)
+            {
+                string path = (string)Get(Call(items, "Item", i), "Path");
+                if (!string.IsNullOrEmpty(path) && (File.Exists(path) || Directory.Exists(path))) files.Add(path);
+            }
+            return files;
         }
 
         static bool IsSelected(object view, string file)

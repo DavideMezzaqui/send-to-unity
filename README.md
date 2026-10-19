@@ -26,6 +26,20 @@ Select the files (or a folder), right-click > **Send to Unity** > click the proj
 
   ![The notification](docs/notification.png)
 
+- **Quick item**: the main menu also has **Send to <last project> → <folder>**, so the most common
+  send is a single click, without opening the submenu. You can hide it in the settings.
+- **Keyboard shortcut**: select files in File Explorer and press **Ctrl+Alt+U**: they go to the last
+  project and folder used. You can change the shortcut (or turn it off) in the settings.
+- **Mouse buttons (Logi Options+, Razer Synapse, ...)**: assign the shortcut to a mouse button in the
+  mouse software and that button sends the selected files to Unity. In Logi Options+: choose the
+  button > *Keyboard shortcut* > press Ctrl+Alt+U; adding it as an app-specific setting for File
+  Explorer keeps the button's usual job everywhere else. The settings window tells you if
+  Logi Options+ is installed.
+- **Settings**: right-click > Send to Unity > **Settings...** (or open `SendToUnity.exe` again):
+  shortcut, quick item, theme.
+
+  ![Settings](docs/settings.png)
+
 - The most recently used projects are at the top. They come from Unity Hub and from Unity's
   recent projects; if one is missing: **Choose project and folder...** > **Browse...**
   Two projects with the same name are told apart by the folder that contains them.
@@ -50,7 +64,7 @@ Select the files (or a folder), right-click > **Send to Unity** > click the proj
     are left behind and, inside the same project, references don't break;
   - when copying inside the same project the `.meta` is not duplicated (Unity creates a new one);
   - a `.meta` that the destination project already has is never replaced.
-- From the keyboard: menu key (or Shift+F10), **U**, right arrow, Enter.
+- From the keyboard: the shortcut above, or menu key (or Shift+F10), **U**, right arrow, Enter.
 
 ## Installation
 
@@ -74,9 +88,10 @@ After installing you can delete the downloaded folder (keep the zip if you want 
 - The right-click menu is a small File Explorer extension (a DLL compiled by `install.cmd`,
   registered only for your user). If after an update the menu still looks like the old one,
   sign out of Windows and back in (or restart File Explorer).
-- Windows and notifications are dark by default. To change it, add `"Theme":"light"` (or
-  `"system"`, to follow the Windows app theme) to `%LOCALAPPDATA%\SendToUnity\settings.json`.
-  Windows' own message boxes and the folder picker keep the system theme.
+- Windows and notifications are dark by default; you can switch to light (or follow Windows) in the
+  settings. Windows' own message boxes and the folder picker keep the system theme.
+- The shortcut is handled by a small background process (`SendToUnity.exe --hotkey`) that starts
+  with Windows. It does nothing until you press the shortcut. `uninstall.cmd` removes it.
 - **Windows 11, short menu**: Windows only shows programs installed as a signed package there.
   The program creates a lightweight package (it only contains a description and a logo, the files
   stay in `%LOCALAPPDATA%\SendToUnity`) and signs it with a certificate created on your PC.

@@ -273,6 +273,36 @@ public static class ExplorerMenu {
         }
     }
 
+    // Clicca la voce principale del menu che inizia con prefix (senza &); false se non c'e'
+    public static bool ClickTop(string[] paths, string prefix) {
+        var pidls = new List<IntPtr>();
+        IContextMenu menu = null;
+        IntPtr popup = CreatePopupMenu();
+        try {
+            menu = Open(paths, pidls);
+            int hr = menu.QueryContextMenu(popup, 0, First, Last, 0);
+            if (hr < 0) throw new Exception("QueryContextMenu " + hr.ToString("x"));
+            int count = GetMenuItemCount(popup);
+            for (int i = 0; i < count; i++) {
+                if (!Text(popup, i).Replace("&", "").StartsWith(prefix)) continue;
+                IntPtr ignored;
+                uint id = Id(popup, i, out ignored);
+                var info = new InvokeInfo();
+                info.Size = Marshal.SizeOf(typeof(InvokeInfo));
+                info.Verb = (IntPtr)(id - First);
+                info.Show = 1;
+                int result = menu.InvokeCommand(ref info);
+                if (result < 0) throw new Exception("InvokeCommand " + result.ToString("x"));
+                return true;
+            }
+            return false;
+        } finally {
+            DestroyMenu(popup);
+            if (menu != null) Marshal.ReleaseComObject(menu);
+            foreach (IntPtr p in pidls) CoTaskMemFree(p);
+        }
+    }
+
     // Voci del sottomenu che ha come titolo parent (null se la voce manca);
     // se click non e' vuoto, clicca la prima voce che inizia con quel testo
     // (da PowerShell un $null passato come stringa arriva come "").

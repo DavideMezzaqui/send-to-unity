@@ -20,6 +20,7 @@ $savedLog   = Join-Path $env:RUNNER_TEMP 'stu-log.txt'
 $registry   = [Microsoft.Win32.Registry]::CurrentUser
 $fileMenu   = 'Software\Classes\*\shell\SendToUnity'
 $dirMenu    = 'Software\Classes\Directory\shell\SendToUnity'
+$runKey     = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $classKey   = 'Software\Classes\CLSID\{6F1D7C0E-3B8A-4E59-9C2D-5A4B8E7F1A23}'
 $sendToLink = Join-Path ([Environment]::GetFolderPath('SendTo')) 'Unity project.lnk'
 $script:failures = 0
@@ -84,7 +85,7 @@ function Wait-Exit($processes, [int]$seconds = 30) {
 # Istanze del programma che stanno inviando (non il servizio del menu ridotto, che resta acceso)
 function Get-Workers {
     $ids = @(Get-CimInstance Win32_Process -Filter "Name='SendToUnity.exe'" |
-        Where-Object { $_.CommandLine -notmatch '--menu-server' } | ForEach-Object { [int]$_.ProcessId })
+        Where-Object { $_.CommandLine -notmatch '--menu-server|--hotkey' } | ForEach-Object { [int]$_.ProcessId })
     if ($ids.Count -eq 0) { return @() }
     @(Get-Process -Id $ids -ErrorAction SilentlyContinue)
 }
@@ -258,7 +259,25 @@ function Click-UiElement($element) {
     [Win]::ClickAt([int]($r.Left + $r.Width / 2), [int]($r.Top + $r.Height / 2))
 }
 
-# Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
+# Il programma in background che ascolta la scorciatoia da tastiera
+function Hotkey-Running {
+    @(Get-CimInstance Win32_Process -Filter "Name='SendToUnity.exe'" | Where-Object { $_.CommandLine -match '--hotkey' }).Count -gt 0
+}
+function Set-Setting([string]$name, $value) {
+    $file = Join-Path $app 'settings.json'
+    $json = [IO.File]::ReadAllText($file) | ConvertFrom-Json
+    $json | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force
+    [IO.File]::WriteAllText($file, ($json | ConvertTo-Json -Depth 5 -Compress))
+    [Threading.EventWaitHandle]::OpenExisting('Local\SendToUnity_hotkey_reload').Set() | Out-Null
+    Start-Sleep -Milliseconds 800
+}
+function Wait-File([string]$path, [int]$seconds = 20) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (Exists $path) -and $watch.Elapsed.TotalSeconds -lt $seconds) { Start-Sleep -Milliseconds 300 }
+    Exists $path
+}
+
+# Sottomenu "Send to Unity" per questi elementi; con $click clicca la voce che inizia cosi'
 function Menu([string[]]$paths, $click = $null) {
     try {
         $items = [ExplorerMenu]::Submenu($paths, 'Send to Unity', $click)
@@ -292,6 +311,9 @@ try {
         Check (Exists $dll) "DLL del menu compilata ($dll)"
     }
     Check (Exists (Join-Path $app 'aperto.ico')) 'icona del pallino verde'
+    Check ([string]$registry.OpenSubKey($runKey).GetValue('SendToUnity') -like '*--hotkey') 'la scorciatoia parte con Windows'
+    Start-Sleep -Seconds 2
+    Check (Hotkey-Running) 'il programma della scorciatoia e'' in ascolto'
     $key = $registry.OpenSubKey($fileMenu)
     if ($modern) {
         # su Windows 11 la voce arriva dal pacchetto, in tutti e due i menu: quella del registro sparisce
@@ -738,6 +760,8 @@ try {
         if ($explorer) {
             Keys '+{F10}' 2500
             Shot-Screen '12-menu-ridotto'
+            $quickEntry = Find-UiMenuItem 'Send to Gioco*' 3000
+            Check ($null -ne $quickEntry) "nel menu ridotto c'e' la voce rapida ($(if ($quickEntry) { $quickEntry.Current.Name }))"
             $entry = Find-UiMenuItem 'Send to Unity*'
             Check ($null -ne $entry) 'nel menu ridotto c''e'' "Invia a Unity"'
             if ($entry) {
@@ -758,6 +782,55 @@ try {
         try { $fake.Kill() } catch { }
     }
 
+    Write-Host '--- 12c. voce rapida, scorciatoia da tastiera, impostazioni'
+    # l'ultimo invio (12) e' andato in Gioco [Prova] & Co > Assets/Kits
+    $quickFile = New-File (Join-Path $in 'rapido.png') 'Q'
+    $items = Menu @($quickFile)
+    $quickItems = @([ExplorerMenu]::TopItems | Where-Object { $_.Replace('&', '') -like 'Send to Gioco*' })
+    Note ('voce rapida: ' + ($quickItems -join ' | '))
+    Check ($quickItems.Count -eq 1 -and $quickItems[0] -like '*Assets/Kits') 'nel menu principale c''e'' la voce rapida verso l''ultimo progetto'
+    Check ([ExplorerMenu]::ClickTop(@($quickFile), 'Send to Gioco')) 'clic sulla voce rapida'
+    Check (Wait-File (Join-Path $kits 'rapido.png')) 'dalla voce rapida il file arriva nell''ultimo progetto'
+    [void](Wait-Idle)
+
+    Check (Hotkey-Running) 'il programma della scorciatoia e'' ancora in ascolto'
+    $keyFile = New-File (Join-Path $in 'tasto.png') 'K'
+    $explorer = Open-Explorer $in 'tasto.png'
+    if ($explorer) {
+        Keys '^%u' 500
+        Check (Wait-File (Join-Path $kits 'tasto.png')) 'con Ctrl+Alt+U i file selezionati arrivano nell''ultimo progetto'
+        [void](Wait-Idle)
+
+        Set-Setting 'Hotkey' 'Ctrl+Shift+F9'
+        $keyFile2 = New-File (Join-Path $in 'tasto2.png') 'K2'
+        Select-InExplorer $explorer 'tasto2.png'
+        Keys '^%u' 1500
+        Check (-not (Exists (Join-Path $kits 'tasto2.png'))) 'cambiata la scorciatoia, quella vecchia non fa piu'' niente'
+        Select-InExplorer $explorer 'tasto2.png'
+        Keys '^+{F9}' 500
+        Check (Wait-File (Join-Path $kits 'tasto2.png')) 'la scorciatoia nuova funziona subito, senza riavviare'
+        [void](Wait-Idle)
+        try { $explorer.Quit() } catch { }
+    }
+
+    Set-Setting 'HideQuickItem' $true
+    Start-Sleep -Seconds 1
+    $items = Menu @($quickFile)
+    Check (@([ExplorerMenu]::TopItems | Where-Object { $_.Replace('&', '') -like 'Send to Gioco*' }).Count -eq 0) 'tolta nelle impostazioni, la voce rapida sparisce'
+    Set-Setting 'HideQuickItem' $false
+
+    $settingsProc = Start-Tool @('--settings')
+    $settingsWindow = Find-Window $settingsProc.Id 'Send to Unity - Settings' 'WindowsForms10*'
+    Check ($null -ne $settingsWindow) 'si apre la finestra delle impostazioni'
+    if ($settingsWindow) {
+        Save-Shot $settingsWindow '14-impostazioni'
+        Note ('impostazioni: ' + ((Get-Controls $settingsWindow | ForEach-Object { $_.Text } | Where-Object { $_ }) -join ' | '))
+        Press (Find-Control $settingsWindow '*BUTTON*' 'Save')
+    }
+    [void](Wait-Exit $settingsProc)
+    $saved = [IO.File]::ReadAllText((Join-Path $app 'settings.json'))
+    Check ($saved -match '"Hotkey":"Ctrl\+Shift\+F9"' -and $saved -match '"HideQuickItem":false') "salvando le impostazioni restano quelle scelte ($saved)"
+
     Write-Host '--- 13. aggiornamento: reinstallare non perde le impostazioni'
     Check ((Install-Tool) -eq 0) 'reinstallazione senza errori'
     $label = [string](@(Menu @($albedo) | ForEach-Object { $_ }) | Select-Object -First 1)
@@ -770,6 +843,8 @@ try {
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'
     Check ($null -eq $registry.OpenSubKey($dirMenu)) 'voce sulle cartelle rimossa'
     Check ($null -eq $registry.OpenSubKey($classKey)) 'comando del menu rimosso'
+    Check ($null -eq $registry.OpenSubKey($runKey).GetValue('SendToUnity')) 'la scorciatoia non parte piu'' con Windows'
+    Check (-not (Hotkey-Running)) 'il programma della scorciatoia e'' chiuso'
     if ($modern) { Check ($null -eq (Get-AppxPackage -Name 'DAVFX.InviaAUnity*')) 'pacchetto del menu ridotto rimosso' }
     Run-Native { reg delete "HKLM\$classKey" /f }
     Check (-not (Exists $sendToLink)) 'collegamento in "Invia a" rimosso'

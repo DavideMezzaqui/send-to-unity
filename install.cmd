@@ -43,6 +43,8 @@ echo Installed.
 echo Right-click files or folders ^> Send to Unity.
 echo On Windows 11 the item is also in the short menu, if you gave the requested permission.
 echo Or: right-click ^> Send to ^> Unity project (opens the window to choose).
+echo Shortcut: select files in File Explorer and press Ctrl+Alt+U (sends to the last project).
+echo Settings: run SendToUnity.exe again, or right-click ^> Send to Unity ^> Settings...
 if /i not "%~1"=="/quiet" pause
 exit /b 0
 
