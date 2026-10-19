@@ -12,6 +12,8 @@ try {
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     Check (-not $admin) "gira come utente normale ($([Security.Principal.WindowsIdentity]::GetCurrent().Name))"
 
+    # senza amministratore Windows chiederebbe la password per il menu ridotto: qui non c'e' nessuno
+    $env:SENDTOUNITY_SOLO_MENU_CLASSICO = '1'
     $install = Start-Process cmd.exe -ArgumentList '/c', (Join-Path $src 'install.cmd'), '/quiet' -Wait -PassThru -WindowStyle Hidden
     Check ($install.ExitCode -eq 0) 'install.cmd senza permessi di amministratore'
 

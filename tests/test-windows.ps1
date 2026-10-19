@@ -26,7 +26,8 @@ $script:failures = 0
 $fake = $null
 $normalUser = $false
 
-Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+Add-Type -AssemblyName System.Drawing, System.Windows.Forms, UIAutomationClient, UIAutomationTypes
+$modern = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber -ge 22000
 Add-Type -Path (Join-Path $PSScriptRoot 'WinTest.cs')
 
 # ------------------------------------------------------------------ utilita'
@@ -80,16 +81,22 @@ function Wait-Exit($processes, [int]$seconds = 30) {
     }
     $ok
 }
+# Istanze del programma che stanno inviando (non il servizio del menu ridotto, che resta acceso)
+function Get-Workers {
+    $ids = @(Get-CimInstance Win32_Process -Filter "Name='SendToUnity.exe'" |
+        Where-Object { $_.CommandLine -notmatch '--menu-server' } | ForEach-Object { [int]$_.ProcessId })
+    @(Get-Process -Id $ids -ErrorAction SilentlyContinue)
+}
 # Dopo un clic nel menu non ho i processi in mano: aspetto che non ce ne siano piu'
 function Wait-Idle([int]$seconds = 30) {
     $watch = [Diagnostics.Stopwatch]::StartNew()
     Start-Sleep -Milliseconds 500
     while ($watch.Elapsed.TotalSeconds -lt $seconds) {
-        if (-not (Get-Process SendToUnity -ErrorAction SilentlyContinue)) { return $true }
+        if ((Get-Workers).Count -eq 0) { return $true }
         Start-Sleep -Milliseconds 250
     }
     Note 'il programma non si chiude: lo termino'
-    Get-Process SendToUnity -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
+    Get-Workers | ForEach-Object { try { $_.Kill() } catch { } }
     $false
 }
 
@@ -106,7 +113,7 @@ function Find-Window([int]$procId, [string]$name, [string]$class = '*', [int]$ti
 function Find-AnyWindow([string]$name, [string]$class = '*', [int]$timeoutMs = 15000) {
     $watch = [Diagnostics.Stopwatch]::StartNew()
     while ($watch.ElapsedMilliseconds -lt $timeoutMs) {
-        foreach ($p in @(Get-Process SendToUnity -ErrorAction SilentlyContinue)) {
+        foreach ($p in @(Get-Workers)) {
             $match = [Win]::TopWindows($p.Id) | Where-Object { $_.Text -eq $name -and $_.Class -like $class } | Select-Object -First 1
             if ($match) { return $match }
         }
@@ -230,6 +237,26 @@ function Install-Tool {
     $code
 }
 
+# Voci di menu visibili ora sullo schermo (il menu ridotto di Windows 11 si legge solo cosi')
+function Ui-MenuItems {
+    $condition = New-Object Windows.Automation.PropertyCondition ([Windows.Automation.AutomationElement]::ControlTypeProperty), ([Windows.Automation.ControlType]::MenuItem)
+    @([Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants, $condition))
+}
+function Find-UiMenuItem([string]$pattern, [int]$timeoutMs = 8000) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while ($watch.ElapsedMilliseconds -lt $timeoutMs) {
+        $item = Ui-MenuItems | Where-Object { $_.Current.Name -like $pattern } | Select-Object -First 1
+        if ($item) { return $item }
+        Start-Sleep -Milliseconds 400
+    }
+    Note ('voci di menu sullo schermo: ' + ((Ui-MenuItems | ForEach-Object { $_.Current.Name }) -join ' | '))
+    $null
+}
+function Click-UiElement($element) {
+    $r = $element.Current.BoundingRectangle
+    [Win]::ClickAt([int]($r.Left + $r.Width / 2), [int]($r.Top + $r.Height / 2))
+}
+
 # Sottomenu "Invia a Unity" per questi elementi; con $click clicca la voce che inizia cosi'
 function Menu([string[]]$paths, $click = $null) {
     try {
@@ -271,6 +298,11 @@ try {
         Check (Exists $dll) "DLL del menu compilata ($dll)"
     }
     Check (Exists (Join-Path $app 'aperto.ico')) 'icona del pallino verde'
+    if ($modern) {
+        $package = Get-AppxPackage -Name 'DAVFX.InviaAUnity'
+        Check ($null -ne $package) 'Windows 11: pacchetto del menu ridotto registrato'
+        if (-not $package) { Note ('dal log: ' + ((Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ -match 'menu ridotto|certificato' }) -join ' | ')) }
+    }
     Check ($null -ne $registry.OpenSubKey($dirMenu)) 'voce "Invia a Unity" sulle cartelle'
     Check (Exists $sendToLink) 'collegamento in "Invia a"'
     if (Exists $sendToLink) {
@@ -679,6 +711,32 @@ try {
         try { $window.Quit() } catch { }
     }
 
+    if ($modern) {
+        Write-Host '--- 12b. menu ridotto di Windows 11'
+        $short = New-File (Join-Path $in 'ridotto.png') 'W'
+        $explorer = Open-Explorer $in 'ridotto.png'
+        if ($explorer) {
+            Keys '+{F10}' 2500
+            Shot-Screen '12-menu-ridotto'
+            $entry = Find-UiMenuItem 'Invia a Unity*'
+            Check ($null -ne $entry) 'nel menu ridotto c''e'' "Invia a Unity"'
+            if ($entry) {
+                Click-UiElement $entry
+                Start-Sleep -Milliseconds 1500
+                Shot-Screen '13-sottomenu-ridotto'
+                $target = Find-UiMenuItem 'Gioco `[Prova`] & Co  (Progetti)*'
+                Check ($null -ne $target) 'nel sottomenu ridotto ci sono i progetti'
+                if ($target) {
+                    Click-UiElement $target
+                    [void](Wait-Idle)
+                    Check ((Read-File (Join-Path $kits 'ridotto.png')) -eq 'W') 'dal menu ridotto il file arriva nel progetto'
+                }
+            }
+            Keys '{ESC}' 300; Keys '{ESC}' 300
+            try { $explorer.Quit() } catch { }
+        }
+    }
+
     Write-Host '--- 13. aggiornamento: reinstallare non perde le impostazioni'
     Check ((Install-Tool) -eq 0) 'reinstallazione senza errori'
     $label = [string](@(Menu @($albedo) | ForEach-Object { $_ }) | Select-Object -First 1)
@@ -691,6 +749,7 @@ try {
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'
     Check ($null -eq $registry.OpenSubKey($dirMenu)) 'voce sulle cartelle rimossa'
     Check ($null -eq $registry.OpenSubKey($classKey)) 'comando del menu rimosso'
+    if ($modern) { Check ($null -eq (Get-AppxPackage -Name 'DAVFX.InviaAUnity')) 'pacchetto del menu ridotto rimosso' }
     Run-Native { reg delete "HKLM\$classKey" /f }
     Check (-not (Exists $sendToLink)) 'collegamento in "Invia a" rimosso'
     Check (-not (Exists $app)) 'cartella del programma rimossa'
@@ -727,6 +786,8 @@ catch {
 finally {
     if ($fake) { try { $fake.Kill() } catch { } }
     if ($normalUser) { try { Remove-LocalUser -Name 'stuprova' } catch { } }
+    # il certificato del test non resta tra quelli fidati del runner
+    Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object { $_.Subject -eq 'CN=InviaAUnity' } | Remove-Item -ErrorAction SilentlyContinue
     Get-Process SendToUnity -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
 
     Write-Host '--- log del programma'

@@ -13,6 +13,9 @@ using System.IO.Pipes;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -77,6 +80,11 @@ namespace SendToUnity
                     return 0;
                 case "--refresh":
                     ShellMenu.Register(null);
+                    return 0;
+                case "--menu-server":
+                    return MenuServer.Run();
+                case "--trust":
+                    ModernMenu.TrustCertificate(list[1]);
                     return 0;
             }
 
@@ -1575,9 +1583,15 @@ namespace SendToUnity
         public const uint SeparatorBefore = 0x20;    // ECF_SEPARATORBEFORE
         const uint FileSystemPath = 0x80058000;      // SIGDN_FILESYSPATH
 
+        // Il menu ridotto di Windows 11 mostra il testo così com'è: lì niente & per la scorciatoia
+        protected virtual bool Modern
+        {
+            get { return false; }
+        }
+
         public int GetTitle(IShellItemArray items, out IntPtr title)
         {
-            title = Marshal.StringToCoTaskMemUni("&" + App.Name);
+            title = Marshal.StringToCoTaskMemUni(Modern ? App.Name : "&" + App.Name);
             return Ok;
         }
 
@@ -1598,7 +1612,7 @@ namespace SendToUnity
 
         public int GetCanonicalName(out Guid name)
         {
-            name = new Guid(ShellMenu.ClassId);
+            name = GetType().GUID;
             return Ok;
         }
 
@@ -1621,13 +1635,15 @@ namespace SendToUnity
 
         public int EnumSubCommands(out IEnumExplorerCommand commands)
         {
-            commands = new CommandList(Build());
+            commands = new CommandList(Build(Modern));
             return Ok;
         }
 
         // Un progetto per riga (i più usati in alto, sempre nello stesso ordine) + "Scegli progetto e cartella..."
-        static List<IExplorerCommand> Build()
+        static List<IExplorerCommand> Build(bool modern)
         {
+            MenuServer.Touch();
+            Func<string, string> escape = text => modern ? text : ShellMenu.Escape(text);
             var list = new List<IExplorerCommand>();
             int count = 0;
             try
@@ -1636,7 +1652,7 @@ namespace SendToUnity
                 foreach (var p in Projects.Known(settings, false).Take(ShellMenu.MaxProjects))
                 {
                     string folder = settings.FolderFor(p.Path);
-                    string label = ShellMenu.Escape(p.DisplayName) + (folder != null ? "   →  " + ShellMenu.Escape(folder) : "");
+                    string label = escape(p.DisplayName) + (folder != null ? "   →  " + escape(folder) : "");
                     list.Add(new ProjectCommand(label, new[] { "--to", p.Path }, Projects.IsOpen(p.Path), false));
                     count++;
                 }
@@ -1740,6 +1756,7 @@ namespace SendToUnity
 
         public int Invoke(IShellItemArray items, IntPtr bindContext)
         {
+            MenuServer.Touch();
             try
             {
                 MenuCommand.Launch(arguments, items);
@@ -1810,6 +1827,508 @@ namespace SendToUnity
         }
     }
 
+    // ------------------------------------------------------------------ menu ridotto di Windows 11
+    // Nel menu ridotto compaiono solo i comandi dei programmi "impacchettati". Basta un pacchetto
+    // leggero (sparse package) con il manifest e un logo: i file restano nella cartella del
+    // programma. Windows lo accetta solo se è firmato con un certificato di cui il PC si fida, quindi
+    // il programma ne crea uno suo, firma il pacchetto, cancella subito la chiave privata (nessuno
+    // può più firmare altro con quel certificato) e chiede una volta i permessi di amministratore
+    // per aggiungerlo ai certificati fidati. Il comando gira in SendToUnity.exe --menu-server,
+    // che Windows avvia quando apri il menu.
+
+    [ComVisible(true), Guid("3C8E5A21-7D4F-4B6A-9E1C-2F5D8A0B7C64"), ClassInterface(ClassInterfaceType.None)]
+    public class ModernMenuCommand : MenuCommand
+    {
+        protected override bool Modern
+        {
+            get { return true; }
+        }
+    }
+
+    static class MenuServer
+    {
+        static long lastCall = DateTime.UtcNow.Ticks;
+
+        public static void Touch()
+        {
+            Interlocked.Exchange(ref lastCall, DateTime.UtcNow.Ticks);
+        }
+
+        // Resta acceso qualche minuto dopo l'ultimo uso: la volta dopo il menu è subito pronto
+        public static int Run()
+        {
+            var services = new RegistrationServices();
+            int cookie = services.RegisterTypeForComClients(typeof(ModernMenuCommand),
+                RegistrationClassContext.LocalServer, RegistrationConnectionType.MultipleUse);
+            Log.Write("menu ridotto: pronto");
+            var timer = new System.Windows.Forms.Timer { Interval = 5000 };
+            timer.Tick += (s, e) =>
+            {
+                if (DateTime.UtcNow.Ticks - Interlocked.Read(ref lastCall) > TimeSpan.FromMinutes(10).Ticks) Application.ExitThread();
+            };
+            timer.Start();
+            Application.Run();
+            services.UnregisterTypeForComClients(cookie);
+            return 0;
+        }
+    }
+
+    static class ModernMenu
+    {
+        public const string PackageName = "DAVFX.InviaAUnity";
+        const string Publisher = "CN=InviaAUnity";
+
+        static string Folder
+        {
+            get { return Path.Combine(App.Dir, "pacchetto"); }
+        }
+
+        static string StateFile
+        {
+            get { return Path.Combine(Folder, "stato.txt"); }
+        }
+
+        public static bool Supported
+        {
+            get
+            {
+                try
+                {
+                    using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+                        return int.Parse((string)key.GetValue("CurrentBuildNumber")) >= 22000;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+        }
+
+        public static void Install()
+        {
+            if (!Supported) return;
+            if (Environment.GetEnvironmentVariable("SENDTOUNITY_SOLO_MENU_CLASSICO") == "1")
+            {
+                Log.Write("menu ridotto: saltato su richiesta");
+                return;
+            }
+            try
+            {
+                string manifest = Manifest();
+                string hash = Hash(manifest);
+                string msix = Path.Combine(Folder, "InviaAUnity.msix");
+                string[] state = null;
+                try { state = File.ReadAllText(StateFile).Split('|'); }
+                catch (Exception) { }
+
+                // stesso manifest e certificato ancora fidato: niente da rifare, nessuna richiesta
+                if (state != null && state.Length == 2 && state[0] == hash && File.Exists(msix) && IsTrusted(state[1]))
+                {
+                    Register(msix, false);
+                    return;
+                }
+
+                Directory.CreateDirectory(Folder);
+                string logo = Path.Combine(Folder, "logo.png");
+                SaveLogo(logo);
+                string manifestFile = Path.Combine(Folder, "AppxManifest.xml");
+                File.WriteAllText(manifestFile, manifest, new UTF8Encoding(false));
+                Package.Write(msix, manifestFile, logo);
+                string cer = Path.Combine(Folder, "InviaAUnity.cer");
+                string thumbprint = PackageSigner.SignWithNewCertificate(msix, Publisher, cer);
+                if (!Trust(cer, thumbprint))
+                {
+                    Log.Write("menu ridotto: certificato non accettato, resta il menu classico");
+                    return;
+                }
+                File.WriteAllText(StateFile, hash + "|" + thumbprint);
+                Register(msix, true);
+            }
+            catch (Exception ex)
+            {
+                Log.Write("menu ridotto non installato: " + ex);
+            }
+        }
+
+        public static void Remove()
+        {
+            if (!Supported) return;
+            try
+            {
+                PowerShell("Get-AppxPackage -Name '" + PackageName + "' | Remove-AppxPackage");
+                Directory.Delete(Folder, true);
+            }
+            catch (Exception ex)
+            {
+                Log.Write("menu ridotto non rimosso: " + ex.Message);
+            }
+        }
+
+        static void Register(string msix, bool replace)
+        {
+            PowerShell(
+                "$p = Get-AppxPackage -Name '" + PackageName + "'\n" +
+                (replace ? "if ($p) { Remove-AppxPackage -Package $p.PackageFullName; $p = $null }\n" : "") +
+                "if (-not $p) { Add-AppxPackage -Path " + PsQuote(msix) + " -ExternalLocation " + PsQuote(App.Dir) + " }");
+            Log.Write("menu ridotto registrato");
+        }
+
+        static string PsQuote(string text)
+        {
+            return "'" + text.Replace("'", "''") + "'";
+        }
+
+        static void PowerShell(string script)
+        {
+            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes("$ErrorActionPreference = 'Stop'\n" + script));
+            var info = new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (var process = Process.Start(info))
+            {
+                var error = process.StandardError.ReadToEndAsync();
+                string output = process.StandardOutput.ReadToEnd();
+                if (!process.WaitForExit(180000)) throw new TimeoutException("PowerShell non risponde");
+                if (process.ExitCode != 0) throw new Exception("PowerShell: " + (error.Result + " " + output).Trim());
+            }
+        }
+
+        static bool IsTrusted(string thumbprint)
+        {
+            using (var store = new X509Store(StoreName.TrustedPeople, StoreLocation.LocalMachine))
+            {
+                store.Open(OpenFlags.ReadOnly);
+                return store.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, false).Count > 0;
+            }
+        }
+
+        // L'unico passo con i permessi di amministratore: Windows chiede conferma
+        static bool Trust(string cer, string thumbprint)
+        {
+            if (new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+            {
+                TrustCertificate(cer);
+            }
+            else
+            {
+                try
+                {
+                    var info = new ProcessStartInfo(App.ExePath, "--trust " + Paths.Quote(cer)) { UseShellExecute = true, Verb = "runas" };
+                    using (var process = Process.Start(info)) process.WaitForExit();
+                }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    Log.Write("menu ridotto: permessi di amministratore negati (" + ex.NativeErrorCode + ")");
+                    return false;
+                }
+            }
+            return IsTrusted(thumbprint);
+        }
+
+        // Aggiunge il certificato a quelli fidati del PC e toglie quelli vecchi del programma
+        public static void TrustCertificate(string cer)
+        {
+            var certificate = new X509Certificate2(cer);
+            using (var store = new X509Store(StoreName.TrustedPeople, StoreLocation.LocalMachine))
+            {
+                store.Open(OpenFlags.ReadWrite);
+                foreach (var old in store.Certificates.Find(X509FindType.FindBySubjectDistinguishedName, Publisher, false))
+                {
+                    if (old.Thumbprint != certificate.Thumbprint) store.Remove(old);
+                }
+                store.Add(certificate);
+            }
+            Log.Write("menu ridotto: certificato aggiunto ai fidati");
+        }
+
+        static string Hash(string text)
+        {
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-", "");
+        }
+
+        static void SaveLogo(string file)
+        {
+            using (var bitmap = new Bitmap(44, 44))
+            {
+                using (var g = Graphics.FromImage(bitmap))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+                    using (var brush = new SolidBrush(SendDialog.OpenGreen)) g.FillEllipse(brush, 11, 11, 22, 22);
+                }
+                bitmap.Save(file, System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
+        static string Manifest()
+        {
+            string clsid = typeof(ModernMenuCommand).GUID.ToString().ToUpperInvariant();
+            return
+@"<?xml version=""1.0"" encoding=""utf-8""?>
+<Package xmlns=""http://schemas.microsoft.com/appx/manifest/foundation/windows10""
+  xmlns:uap=""http://schemas.microsoft.com/appx/manifest/uap/windows10""
+  xmlns:uap10=""http://schemas.microsoft.com/appx/manifest/uap/windows10/10""
+  xmlns:desktop4=""http://schemas.microsoft.com/appx/manifest/desktop/windows10/4""
+  xmlns:desktop5=""http://schemas.microsoft.com/appx/manifest/desktop/windows10/5""
+  xmlns:desktop6=""http://schemas.microsoft.com/appx/manifest/desktop/windows10/6""
+  xmlns:com=""http://schemas.microsoft.com/appx/manifest/com/windows10""
+  xmlns:rescap=""http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities""
+  IgnorableNamespaces=""uap uap10 desktop4 desktop5 desktop6 com rescap"">
+  <Identity Name=""" + PackageName + @""" Publisher=""" + Publisher + @""" Version=""1.0.0.0"" ProcessorArchitecture=""neutral"" />
+  <Properties>
+    <DisplayName>Invia a Unity</DisplayName>
+    <PublisherDisplayName>Invia a Unity</PublisherDisplayName>
+    <Logo>logo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
+  </Properties>
+  <Resources>
+    <Resource Language=""it-it"" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name=""Windows.Desktop"" MinVersion=""10.0.22000.0"" MaxVersionTested=""10.0.26100.0"" />
+  </Dependencies>
+  <Capabilities>
+    <rescap:Capability Name=""runFullTrust"" />
+    <rescap:Capability Name=""unvirtualizedResources"" />
+  </Capabilities>
+  <Applications>
+    <Application Id=""InviaAUnity"" Executable=""SendToUnity.exe"" uap10:TrustLevel=""mediumIL"" uap10:RuntimeBehavior=""win32App"">
+      <uap:VisualElements AppListEntry=""none"" DisplayName=""Invia a Unity"" Description=""Invia a Unity"" BackgroundColor=""transparent"" Square150x150Logo=""logo.png"" Square44x44Logo=""logo.png"" />
+      <Extensions>
+        <desktop4:Extension Category=""windows.fileExplorerContextMenus"">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type=""*"">
+              <desktop5:Verb Id=""SendToUnity"" Clsid=""" + clsid + @""" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type=""Directory"">
+              <desktop5:Verb Id=""SendToUnity"" Clsid=""" + clsid + @""" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <com:Extension Category=""windows.comServer"">
+          <com:ComServer>
+            <com:ExeServer Executable=""SendToUnity.exe"" Arguments=""--menu-server"" DisplayName=""Invia a Unity"">
+              <com:Class Id=""" + clsid + @""" DisplayName=""Invia a Unity"" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
+";
+        }
+    }
+
+    // Scrive il pacchetto .msix con le API di Windows (appxpackaging.dll), senza strumenti esterni
+    static class Package
+    {
+        [ComImport, Guid("5842a140-ff9f-4166-8f5c-62f5b7b0c781")]
+        class AppxFactory { }
+
+        [ComImport, Guid("beb94909-e451-438b-b5a7-d79e767b75d8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IAppxFactory
+        {
+            void CreatePackageWriter(IntPtr output, ref PackageSettings settings, out IAppxPackageWriter writer);
+        }
+
+        [ComImport, Guid("9099e33b-246f-41e4-881a-008eb613f858"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IAppxPackageWriter
+        {
+            void AddPayloadFile([MarshalAs(UnmanagedType.LPWStr)] string name, [MarshalAs(UnmanagedType.LPWStr)] string contentType,
+                int compression, IntPtr input);
+            void Close(IntPtr manifest);
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PackageSettings
+        {
+            public int ForceZip32;
+            public IntPtr HashMethod;
+        }
+
+        [DllImport("urlmon.dll", CharSet = CharSet.Unicode)]
+        static extern int CreateUri(string uri, uint flags, IntPtr reserved, out IntPtr result);
+
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+        static extern int SHCreateStreamOnFileEx(string file, uint mode, uint attributes, bool create, IntPtr template, out IntPtr stream);
+
+        const uint Read = 0x20;                    // STGM_READ | STGM_SHARE_DENY_WRITE
+        const uint Create = 0x1000 | 0x1 | 0x10;   // STGM_CREATE | STGM_WRITE | STGM_SHARE_EXCLUSIVE
+
+        public static void Write(string msix, string manifest, string logo)
+        {
+            IntPtr output = IntPtr.Zero, uri = IntPtr.Zero, logoStream = IntPtr.Zero, manifestStream = IntPtr.Zero;
+            IAppxPackageWriter writer = null;
+            try
+            {
+                Marshal.ThrowExceptionForHR(SHCreateStreamOnFileEx(msix, Create, 0x80, true, IntPtr.Zero, out output));
+                Marshal.ThrowExceptionForHR(CreateUri("http://www.w3.org/2001/04/xmlenc#sha256", 0, IntPtr.Zero, out uri));
+                Marshal.ThrowExceptionForHR(SHCreateStreamOnFileEx(logo, Read, 0x80, false, IntPtr.Zero, out logoStream));
+                Marshal.ThrowExceptionForHR(SHCreateStreamOnFileEx(manifest, Read, 0x80, false, IntPtr.Zero, out manifestStream));
+                var settings = new PackageSettings { ForceZip32 = 1, HashMethod = uri };
+                ((IAppxFactory)new AppxFactory()).CreatePackageWriter(output, ref settings, out writer);
+                writer.AddPayloadFile("logo.png", "image/png", 1, logoStream);   // APPX_COMPRESSION_OPTION_NORMAL
+                writer.Close(manifestStream);
+            }
+            finally
+            {
+                if (writer != null) Marshal.ReleaseComObject(writer);
+                foreach (IntPtr p in new[] { output, uri, logoStream, manifestStream })
+                    if (p != IntPtr.Zero) Marshal.Release(p);
+            }
+        }
+    }
+
+    // Firma il pacchetto con SignerSignEx2 (mssign32.dll), come fa signtool
+    static class PackageSigner
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        struct SignerFileInfo { public int Size; public IntPtr FileName; public IntPtr File; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SignerSubjectInfo { public int Size; public IntPtr Index; public int Choice; public IntPtr FileInfo; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SignerCertStoreInfo { public int Size; public IntPtr Certificate; public int Policy; public IntPtr Store; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SignerCert { public int Size; public int Choice; public IntPtr StoreInfo; public IntPtr Window; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SignerSignatureInfo { public int Size; public int HashAlgorithm; public int AttributeChoice; public IntPtr Authcode; public IntPtr Authenticated; public IntPtr Unauthenticated; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SignerSignEx2Params
+        {
+            public int Flags; public IntPtr SubjectInfo; public IntPtr SigningCert; public IntPtr SignatureInfo; public IntPtr ProviderInfo;
+            public int TimestampFlags; public IntPtr TimestampAlgorithm; public IntPtr TimestampUrl; public IntPtr Attributes;
+            public IntPtr SipData; public IntPtr SignerContext; public IntPtr CryptoPolicy; public IntPtr Reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct AppxSipClientData { public IntPtr SignerParams; public IntPtr AppxSipState; }
+
+        [DllImport("mssign32.dll")]
+        static extern int SignerSignEx2(int flags, IntPtr subject, IntPtr cert, IntPtr signature, IntPtr provider, int timestampFlags,
+            IntPtr timestampAlgorithm, IntPtr timestampUrl, IntPtr attributes, IntPtr sipData, IntPtr signerContext, IntPtr cryptoPolicy, IntPtr reserved);
+
+        [DllImport("mssign32.dll")]
+        static extern int SignerFreeSignerContext(IntPtr context);
+
+        // Crea un certificato nuovo, firma, salva la parte pubblica in cer e cancella la chiave privata
+        public static string SignWithNewCertificate(string file, string subject, string cer)
+        {
+            string password = Guid.NewGuid().ToString("N");
+            byte[] pfx;
+            using (var rsa = new RSACng(2048))
+            {
+                var request = new CertificateRequest(subject, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+                request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+                request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.3") }, false));
+                using (var created = request.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(30)))
+                    pfx = created.Export(X509ContentType.Pfx, password);
+            }
+            var certificate = new X509Certificate2(pfx, password, X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.PersistKeySet);
+            try
+            {
+                File.WriteAllBytes(cer, certificate.Export(X509ContentType.Cert));
+                Sign(file, certificate.Handle);
+                return certificate.Thumbprint;
+            }
+            finally
+            {
+                DeleteKey(certificate);
+                certificate.Reset();
+            }
+        }
+
+        static void DeleteKey(X509Certificate2 certificate)
+        {
+            try
+            {
+                var key = certificate.GetRSAPrivateKey();
+                var cng = key as RSACng;
+                if (cng != null) cng.Key.Delete();
+                var csp = key as RSACryptoServiceProvider;
+                if (csp != null)
+                {
+                    csp.PersistKeyInCsp = false;
+                    csp.Clear();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("chiave del certificato non cancellata: " + ex.Message);
+            }
+        }
+
+        static void Sign(string file, IntPtr certificate)
+        {
+            var memory = new List<IntPtr>();
+            Func<object, IntPtr> put = value =>
+            {
+                IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf(value));
+                memory.Add(p);
+                Marshal.StructureToPtr(value, p, false);
+                return p;
+            };
+            Func<int, IntPtr> zeros = size =>
+            {
+                IntPtr p = Marshal.AllocHGlobal(size);
+                memory.Add(p);
+                for (int i = 0; i < size; i++) Marshal.WriteByte(p, i, 0);
+                return p;
+            };
+            try
+            {
+                IntPtr name = Marshal.StringToHGlobalUni(file);
+                memory.Add(name);
+                IntPtr fileInfo = put(new SignerFileInfo { Size = Marshal.SizeOf(typeof(SignerFileInfo)), FileName = name });
+                IntPtr subject = put(new SignerSubjectInfo
+                {
+                    Size = Marshal.SizeOf(typeof(SignerSubjectInfo)), Index = zeros(4), Choice = 1, FileInfo = fileInfo   // SIGNER_SUBJECT_FILE
+                });
+                IntPtr storeInfo = put(new SignerCertStoreInfo
+                {
+                    Size = Marshal.SizeOf(typeof(SignerCertStoreInfo)), Certificate = certificate, Policy = 2   // SIGNER_CERT_POLICY_CHAIN
+                });
+                IntPtr cert = put(new SignerCert { Size = Marshal.SizeOf(typeof(SignerCert)), Choice = 2, StoreInfo = storeInfo });   // SIGNER_CERT_STORE
+                IntPtr signature = put(new SignerSignatureInfo { Size = Marshal.SizeOf(typeof(SignerSignatureInfo)), HashAlgorithm = 0x800C });   // SHA-256
+                IntPtr context = zeros(IntPtr.Size);
+                IntPtr parameters = put(new SignerSignEx2Params
+                {
+                    SubjectInfo = subject, SigningCert = cert, SignatureInfo = signature, SignerContext = context
+                });
+                IntPtr sip = put(new AppxSipClientData { SignerParams = parameters });
+                // i parametri puntano ai dati per il pacchetto e viceversa, come vuole la firma dei .msix
+                var withSip = (SignerSignEx2Params)Marshal.PtrToStructure(parameters, typeof(SignerSignEx2Params));
+                withSip.SipData = sip;
+                Marshal.StructureToPtr(withSip, parameters, false);
+
+                int hr = SignerSignEx2(0, subject, cert, signature, IntPtr.Zero, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                    sip, context, IntPtr.Zero, IntPtr.Zero);
+                var sipData = (AppxSipClientData)Marshal.PtrToStructure(sip, typeof(AppxSipClientData));
+                if (sipData.AppxSipState != IntPtr.Zero) Marshal.Release(sipData.AppxSipState);
+                IntPtr signerContext = Marshal.ReadIntPtr(context);
+                if (signerContext != IntPtr.Zero) SignerFreeSignerContext(signerContext);
+                Marshal.ThrowExceptionForHR(hr);
+            }
+            finally
+            {
+                foreach (IntPtr p in memory) Marshal.FreeHGlobal(p);
+            }
+        }
+    }
+
     static class Installer
     {
         static string SendToLink
@@ -1827,6 +2346,7 @@ namespace SendToUnity
 
             ShellMenu.SaveOpenIcon();
             ShellMenu.Register(dll);
+            ModernMenu.Install();
             // "Invia a" apre direttamente la finestra di scelta
             LinkFile.Create(SendToLink, App.ExePath, "--pick", ShellMenu.HubExe());
             Log.Write("installato: " + App.ExePath);
@@ -1835,6 +2355,7 @@ namespace SendToUnity
         public static void Uninstall()
         {
             ShellMenu.Remove();
+            ModernMenu.Remove();
             TryDelete(SendToLink);
             Log.Write("disinstallato");
         }

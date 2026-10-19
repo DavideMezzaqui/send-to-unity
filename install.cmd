@@ -34,13 +34,14 @@ set "MENU=%DEST%\SendToUnityMenu-%RANDOM%%RANDOM%%RANDOM%.dll"
 "%CSC%" /nologo /codepage:65001 /target:library /optimize+ /out:"%MENU%" %REFS% "%SRC%"
 if errorlevel 1 goto fail
 
+rem Su Windows 11, la prima volta, Windows chiede i permessi di amministratore per il menu ridotto
 start "" /wait "%EXE%" --install "%MENU%"
 if errorlevel 1 goto fail
 
 echo.
 echo Installato.
 echo Tasto destro su file o cartelle ^> Invia a Unity.
-echo Su Windows 11 la voce e' in "Mostra altre opzioni" (oppure Maiusc + tasto destro).
+echo Su Windows 11 la voce c'e' anche nel menu ridotto, se hai dato il permesso richiesto.
 echo Oppure: tasto destro ^> Invia a ^> Progetto Unity (apre la finestra di scelta).
 if /i not "%~1"=="/quiet" pause
 exit /b 0
