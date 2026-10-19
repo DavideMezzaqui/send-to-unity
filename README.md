@@ -46,17 +46,21 @@ Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul p
     `.meta` orfani e, dentro lo stesso progetto, i riferimenti non si rompono;
   - copiando dentro lo stesso progetto il `.meta` non viene duplicato (Unity ne crea uno nuovo);
   - un `.meta` che il progetto di destinazione ha già non viene mai sostituito.
-- Da tastiera: tasto menu (o Maiusc+F10), **I**, freccia destra, Invio. Su Windows 11 il tasto
-  menu apre prima il menu ridotto: lì scegli "Mostra altre opzioni".
+- Da tastiera: tasto menu (o Maiusc+F10), **I**, freccia destra, Invio.
 
 ## Installazione
 
 1. Su GitHub: **Code** > **Download ZIP**, poi estrai lo zip.
 2. Doppio clic su `install.cmd`.
 
-Non servono permessi di amministratore né download: il programma viene compilato sul tuo PC
-con il compilatore C# che fa già parte di Windows. Se compare "Windows ha protetto il PC",
-clicca "Ulteriori informazioni" > "Esegui comunque" (succede con i file .cmd scaricati da internet).
+Non servono download: il programma viene compilato sul tuo PC con il compilatore C# che fa già
+parte di Windows. Se compare "Windows ha protetto il PC", clicca "Ulteriori informazioni" >
+"Esegui comunque" (succede con i file .cmd scaricati da internet).
+
+**Su Windows 11**, la prima volta, Windows chiede i permessi di amministratore: servono per far
+comparire "Invia a Unity" anche nel menu ridotto (quello che si apre subito col tasto destro).
+Se rispondi di no, la voce resta solo sotto "Mostra altre opzioni" e il resto funziona uguale.
+Dalla seconda installazione in poi non lo chiede più.
 
 Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 
@@ -66,8 +70,14 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
   `install.cmd`, registrata solo per il tuo utente). Se dopo un aggiornamento il menu sembra
   ancora quello vecchio, esci da Windows e rientra (oppure riavvia Esplora risorse).
 - La notifica segue il tema di Windows (chiaro o scuro), come i menu.
-- **Windows 11**: la voce è nel menu classico, cioè sotto "Mostra altre opzioni". Più veloce:
-  **Maiusc + tasto destro**, che apre subito il menu classico.
+- **Windows 11, menu ridotto**: Windows mostra lì solo i programmi installati come pacchetto
+  firmato. Il programma crea un pacchetto leggero (dentro ci sono solo la descrizione e un logo,
+  i file restano in `%LOCALAPPDATA%\SendToUnity`) e lo firma con un certificato creato sul tuo PC.
+  Il permesso di amministratore serve una volta sola, per aggiungere quel certificato a quelli
+  di cui il PC si fida. La chiave segreta del certificato viene cancellata subito dopo la firma:
+  nessuno può usarlo per firmare altro. Disinstallando, il pacchetto viene tolto ma il
+  certificato resta tra quelli fidati (senza chiave non serve a nulla); se vuoi toglierlo:
+  `certlm.msc` > Persone attendibili > Certificati > InviaAUnity > Elimina.
 - Unity importa da solo solo se in *Preferences > Asset Pipeline* è attivo **Auto Refresh**
   e non sei in Play mode. Altrimenti premi Ctrl+R in Unity.
 - C'è anche tasto destro > **Invia a** > **Progetto Unity**, che apre direttamente la finestra.
@@ -79,6 +89,8 @@ Per aggiornare: rifai `install.cmd`. Per togliere tutto: `uninstall.cmd`.
 - `SendToUnity.cs` è tutto il programma. Deve restare compatibile con C# 5, perché lo compila
   il compilatore incluso in Windows. `install.cmd` lo compila due volte: come programma e come
   DLL del menu (`IExplorerCommand`), che Esplora risorse carica per mostrare le voci.
+  Su Windows 11 lo stesso comando lo serve `SendToUnity.exe --menu-server`, registrato da un
+  pacchetto con posizione esterna (sparse package) costruito e firmato con le API di Windows.
 - `tests/test-windows.ps1` lo installa e lo prova su una vera macchina Windows (GitHub Actions,
   a ogni modifica di questa cartella): menu del tasto destro vero, finestre, copie, `.meta`,
   file bloccati, progetto aperto in un finto Unity, disinstallazione. Il runner gira da

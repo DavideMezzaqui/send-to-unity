@@ -113,8 +113,8 @@ namespace SendToUnity
             if (files.Count == 0)
             {
                 Ui.Info("Invia a Unity si usa dal tasto destro: seleziona file o cartelle in Esplora risorse, " +
-                        "poi tasto destro > Invia a Unity.\n\nSu Windows 11 la voce è sotto \"Mostra altre opzioni\" " +
-                        "(oppure Maiusc + tasto destro).");
+                        "poi tasto destro > Invia a Unity.\n\nSu Windows 11, se non la vedi subito, è sotto " +
+                        "\"Mostra altre opzioni\" (oppure Maiusc + tasto destro).");
                 return 0;
             }
 

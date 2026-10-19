@@ -719,6 +719,9 @@ try {
     if ($modern) {
         Write-Host '--- 12b. menu ridotto di Windows 11'
         $short = New-File (Join-Path $in 'ridotto.png') 'W'
+        # Altro progetto aperto in Unity: nello screenshot deve avere il pallino verde
+        $fake = Start-Process (Join-Path $fakeDir 'Unity.exe') -ArgumentList ('-projectPath ' + (Q $p2)) -PassThru
+        [void](Find-Window $fake.Id $fakeTitle)
         $explorer = Open-Explorer $in 'ridotto.png'
         if ($explorer) {
             Keys '+{F10}' 2500
@@ -740,6 +743,7 @@ try {
             Keys '{ESC}' 300; Keys '{ESC}' 300
             try { $explorer.Quit() } catch { }
         }
+        try { $fake.Kill() } catch { }
     }
 
     Write-Host '--- 13. aggiornamento: reinstallare non perde le impostazioni'
