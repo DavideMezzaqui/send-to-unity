@@ -361,9 +361,9 @@ try {
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Note ('sottomenu: ' + (@($items) -join ' | '))
     Check (@([ExplorerMenu]::TopItems | Where-Object { $_.Replace('&', '') -eq 'Send to Unity' }).Count -le 1) 'una sola voce "Invia a Unity" nel menu'
-    Check (@($items).Count -eq 4) 'sottomenu: 2 progetti, separatore, "Scegli progetto e cartella..." (il progetto sparito escluso)'
+    Check (@($items).Count -eq 5) 'sottomenu: 2 progetti, separatore, "Choose project and folder...", "Settings..." (il progetto sparito escluso)'
     Check (@($items)[0] -eq 'Gioco [Prova] && Co') 'primo il progetto usato piu di recente, con la & mostrata'
-    Check (@($items)[-1] -eq 'Choose project and folder...') 'ultima voce: Scegli progetto e cartella...'
+    Check (@($items)[-2] -eq 'Choose project and folder...' -and @($items)[-1] -eq 'Settings...') 'in fondo: Choose project and folder... e Settings...'
 
     Write-Host '--- 3. primo invio verso un progetto, dal menu: si apre la finestra'
     $items = Menu @($albedo, $normal) 'Gioco'

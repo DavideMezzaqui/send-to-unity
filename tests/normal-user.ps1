@@ -14,7 +14,9 @@ try {
 
     # senza amministratore Windows chiederebbe la password per il menu ridotto: qui non c'e' nessuno
     $env:SENDTOUNITY_SOLO_MENU_CLASSICO = '1'
-    $install = Start-Process cmd.exe -ArgumentList '/c', (Join-Path $src 'install.cmd'), '/quiet' -Wait -PassThru -WindowStyle Hidden
+    # Start-Process -Wait aspetterebbe anche il programma della scorciatoia, che resta acceso: si aspetta solo cmd
+    $install = [Diagnostics.Process]::Start('cmd.exe', '/c "' + (Join-Path $src 'install.cmd') + '" /quiet')
+    $install.WaitForExit()
     Check ($install.ExitCode -eq 0) 'install.cmd senza permessi di amministratore'
 
     # un progetto in Unity Hub, con la cartella gia' scelta, aperto in un finto Unity
@@ -53,7 +55,8 @@ try {
     $log = Join-Path $app 'log.txt'
     if (Test-Path $log) { foreach ($line in [IO.File]::ReadAllLines($log)) { Say ('log: ' + $line) } }
     foreach ($p in [Diagnostics.Process]::GetProcessesByName('SendToUnity')) { try { $p.Kill() } catch { } }
-    $uninstall = Start-Process cmd.exe -ArgumentList '/c', (Join-Path $src 'uninstall.cmd'), '/quiet' -Wait -PassThru -WindowStyle Hidden
+    $uninstall = [Diagnostics.Process]::Start('cmd.exe', '/c "' + (Join-Path $src 'uninstall.cmd') + '" /quiet')
+    $uninstall.WaitForExit()
     Check ($uninstall.ExitCode -eq 0) 'uninstall.cmd senza permessi di amministratore'
 } catch {
     Say ('KO errore: ' + $_.Exception.Message)

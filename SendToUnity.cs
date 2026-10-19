@@ -2163,6 +2163,7 @@ namespace SendToUnity
         // Different name and certificate for each user of the PC: each has their own package and doesn't touch the others'
         static readonly string UserTag = UserHash();
         public static readonly string PackageName = "DAVFX.InviaAUnity." + UserTag;
+        static readonly string QuickPackageName = "DAVFX.InviaAUnity.Quick." + UserTag;
         static readonly string Publisher = "CN=InviaAUnity-" + UserTag;
 
         // the first versions used the same name for everyone: it must be removed, otherwise the item would appear twice
@@ -2248,17 +2249,19 @@ namespace SendToUnity
 
         static void Update()
         {
-            string manifest = Manifest();
-            string hash = Hash(manifest);
+            string manifest = Manifest(false);
+            string quickManifest = Manifest(true);
+            string hash = Hash(manifest + quickManifest);
             string msix = Path.Combine(Folder, "InviaAUnity.msix");
+            string quickMsix = Path.Combine(Folder, "InviaAUnityQuick.msix");
             string[] state = null;
             try { state = File.ReadAllText(StateFile).Split('|'); }
             catch (Exception) { }
 
             // same manifest and certificate still trusted: nothing to redo, no prompt
-            if (state != null && state.Length == 2 && state[0] == hash && File.Exists(msix) && IsTrusted(state[1]))
+            if (state != null && state.Length == 2 && state[0] == hash && File.Exists(msix) && File.Exists(quickMsix) && IsTrusted(state[1]))
             {
-                Register(msix, false);
+                Register(msix, quickMsix, false);
                 return;
             }
 
@@ -2268,15 +2271,19 @@ namespace SendToUnity
             string manifestFile = Path.Combine(Folder, "AppxManifest.xml");
             File.WriteAllText(manifestFile, manifest, new UTF8Encoding(false));
             Package.Write(msix, manifestFile, logo);
+            string quickManifestFile = Path.Combine(Folder, "AppxManifestQuick.xml");
+            File.WriteAllText(quickManifestFile, quickManifest, new UTF8Encoding(false));
+            Package.Write(quickMsix, quickManifestFile, logo);
             string cer = Path.Combine(Folder, "InviaAUnity.cer");
-            string thumbprint = PackageSigner.SignWithNewCertificate(msix, Publisher, cer);
+            // one certificate for both: still a single administrator prompt
+            string thumbprint = PackageSigner.SignWithNewCertificate(new[] { msix, quickMsix }, Publisher, cer);
             if (!Trust(cer, thumbprint))
             {
                 Log.Write("short menu: certificate not accepted, keeping the classic menu");
                 return;
             }
             File.WriteAllText(StateFile, hash + "|" + thumbprint);
-            Register(msix, true);
+            Register(msix, quickMsix, true);
         }
 
         public static void Remove()
@@ -2285,6 +2292,7 @@ namespace SendToUnity
             try
             {
                 PowerShell("Get-AppxPackage -Name $env:STU_PACKAGE | Remove-AppxPackage\n" +
+                           "Get-AppxPackage -Name $env:STU_PACKAGE2 | Remove-AppxPackage\n" +
                            "Get-AppxPackage -Name '" + LegacyPackage + "' | Remove-AppxPackage");
                 if (Directory.Exists(Folder)) Directory.Delete(Folder, true);
             }
@@ -2294,15 +2302,18 @@ namespace SendToUnity
             }
         }
 
-        static void Register(string msix, bool replace)
+        static void Register(string msix, string quickMsix, bool replace)
         {
             // paths go through environment variables: no character in the user name can break the script
+            string add =
+                "$p = Get-AppxPackage -Name $env:NAME\n" +
+                (replace ? "if ($p) { Remove-AppxPackage -Package $p.PackageFullName; $p = $null }\n" : "") +
+                "if (-not $p) { Add-AppxPackage -Path $env:MSIX -ExternalLocation $env:STU_DIR }\n";
             PowerShell(
                 "Get-AppxPackage -Name '" + LegacyPackage + "' | Remove-AppxPackage\n" +
-                "$p = Get-AppxPackage -Name $env:STU_PACKAGE\n" +
-                (replace ? "if ($p) { Remove-AppxPackage -Package $p.PackageFullName; $p = $null }\n" : "") +
-                "if (-not $p) { Add-AppxPackage -Path $env:STU_MSIX -ExternalLocation $env:STU_DIR }",
-                "STU_MSIX", msix);
+                add.Replace("$env:NAME", "$env:STU_PACKAGE").Replace("$env:MSIX", "$env:STU_MSIX") +
+                add.Replace("$env:NAME", "$env:STU_PACKAGE2").Replace("$env:MSIX", "$env:STU_MSIX2"),
+                "STU_MSIX", msix, "STU_MSIX2", quickMsix);
             Log.Write("short menu registered");
         }
 
@@ -2323,6 +2334,7 @@ namespace SendToUnity
                 RedirectStandardError = true
             };
             info.EnvironmentVariables["STU_PACKAGE"] = PackageName;
+            info.EnvironmentVariables["STU_PACKAGE2"] = QuickPackageName;
             info.EnvironmentVariables["STU_DIR"] = App.Dir;
             for (int i = 0; i + 1 < variables.Length; i += 2) info.EnvironmentVariables[variables[i]] = variables[i + 1];
             using (var process = Process.Start(info))
@@ -2417,10 +2429,15 @@ namespace SendToUnity
             }
         }
 
-        static string Manifest()
+        // Two packages: Windows 11 groups the items of one program in a submenu with its name, so the
+        // quick item has a package of its own to stay in the main menu
+        static string Manifest(bool quick)
         {
-            string clsid = typeof(ModernMenuCommand).GUID.ToString().ToUpperInvariant();
-            string quick = typeof(ModernQuickCommand).GUID.ToString().ToUpperInvariant();
+            string clsid = (quick ? typeof(ModernQuickCommand) : typeof(ModernMenuCommand)).GUID.ToString().ToUpperInvariant();
+            string name = quick ? QuickPackageName : PackageName;
+            string title = quick ? "Send to Unity (last project)" : "Send to Unity";
+            string app = quick ? "InviaAUnityQuick" : "InviaAUnity";
+            string verb = quick ? "SendToUnityQuick" : "SendToUnity";
             return
 @"<?xml version=""1.0"" encoding=""utf-8""?>
 <Package xmlns=""http://schemas.microsoft.com/appx/manifest/foundation/windows10""
@@ -2432,9 +2449,9 @@ namespace SendToUnity
   xmlns:com=""http://schemas.microsoft.com/appx/manifest/com/windows10""
   xmlns:rescap=""http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities""
   IgnorableNamespaces=""uap uap10 desktop4 desktop5 desktop6 com rescap"">
-  <Identity Name=""" + PackageName + @""" Publisher=""" + Publisher + @""" Version=""1.0.0.0"" ProcessorArchitecture=""neutral"" />
+  <Identity Name=""" + name + @""" Publisher=""" + Publisher + @""" Version=""1.0.0.0"" ProcessorArchitecture=""neutral"" />
   <Properties>
-    <DisplayName>Send to Unity</DisplayName>
+    <DisplayName>" + title + @"</DisplayName>
     <PublisherDisplayName>Send to Unity</PublisherDisplayName>
     <Logo>logo.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
@@ -2452,26 +2469,23 @@ namespace SendToUnity
     <rescap:Capability Name=""unvirtualizedResources"" />
   </Capabilities>
   <Applications>
-    <Application Id=""InviaAUnity"" Executable=""SendToUnity.exe"" uap10:TrustLevel=""mediumIL"" uap10:RuntimeBehavior=""win32App"">
-      <uap:VisualElements AppListEntry=""none"" DisplayName=""Send to Unity"" Description=""Send to Unity"" BackgroundColor=""transparent"" Square150x150Logo=""logo.png"" Square44x44Logo=""logo.png"" />
+    <Application Id=""" + app + @""" Executable=""SendToUnity.exe"" uap10:TrustLevel=""mediumIL"" uap10:RuntimeBehavior=""win32App"">
+      <uap:VisualElements AppListEntry=""none"" DisplayName=""" + title + @""" Description=""" + title + @""" BackgroundColor=""transparent"" Square150x150Logo=""logo.png"" Square44x44Logo=""logo.png"" />
       <Extensions>
         <desktop4:Extension Category=""windows.fileExplorerContextMenus"">
           <desktop4:FileExplorerContextMenus>
             <desktop5:ItemType Type=""*"">
-              <desktop5:Verb Id=""SendToUnity"" Clsid=""" + clsid + @""" />
-              <desktop5:Verb Id=""SendToUnityQuick"" Clsid=""" + quick + @""" />
+              <desktop5:Verb Id=""" + verb + @""" Clsid=""" + clsid + @""" />
             </desktop5:ItemType>
             <desktop5:ItemType Type=""Directory"">
-              <desktop5:Verb Id=""SendToUnity"" Clsid=""" + clsid + @""" />
-              <desktop5:Verb Id=""SendToUnityQuick"" Clsid=""" + quick + @""" />
+              <desktop5:Verb Id=""" + verb + @""" Clsid=""" + clsid + @""" />
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
         <com:Extension Category=""windows.comServer"">
           <com:ComServer>
-            <com:ExeServer Executable=""SendToUnity.exe"" Arguments=""--menu-server"" DisplayName=""Send to Unity"">
-              <com:Class Id=""" + clsid + @""" DisplayName=""Send to Unity"" />
-              <com:Class Id=""" + quick + @""" DisplayName=""Send to Unity (last project)"" />
+            <com:ExeServer Executable=""SendToUnity.exe"" Arguments=""--menu-server"" DisplayName=""" + title + @""">
+              <com:Class Id=""" + clsid + @""" DisplayName=""" + title + @""" />
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>
@@ -2580,7 +2594,7 @@ namespace SendToUnity
         static extern int SignerFreeSignerContext(IntPtr context);
 
         // Creates a new certificate, signs, saves the public part in cer and deletes the private key
-        public static string SignWithNewCertificate(string file, string subject, string cer)
+        public static string SignWithNewCertificate(string[] files, string subject, string cer)
         {
             string password = Guid.NewGuid().ToString("N");
             byte[] pfx;
@@ -2597,7 +2611,7 @@ namespace SendToUnity
             try
             {
                 File.WriteAllBytes(cer, certificate.Export(X509ContentType.Cert));
-                Sign(file, certificate.Handle);
+                foreach (string file in files) Sign(file, certificate.Handle);
                 return certificate.Thumbprint;
             }
             finally
