@@ -84,7 +84,7 @@ namespace SendToUnity
                 case "--menu-server":
                     return MenuServer.Run();
                 case "--trust":
-                    ModernMenu.TrustCertificate(list[1]);
+                    ModernMenu.TrustCertificate(list[1], list.Count > 2 ? list[2] : "");
                     return 0;
             }
 
@@ -353,8 +353,8 @@ namespace SendToUnity
                 }
                 string folder = settings.FolderFor(project);
                 string error;
-                if (folder != null && Folders.Clean(folder, out error) != null)
-                    return Quick(project, folder, collector);
+                string clean = folder == null ? null : Folders.Clean(folder, out error);
+                if (clean != null) return Quick(project, clean, collector);
             }
             return WithDialog(project, collector, settings);
         }
@@ -369,18 +369,29 @@ namespace SendToUnity
             {
                 // un giro per ogni invio, con il suo conteggio e la sua domanda sui file già presenti
                 if (job == null) job = new CopyJob(project, folder, false);
+                bool cancelled = false;
                 do
                 {
                     if (!job.Run(files))
                     {
-                        collector.Close();
-                        return status;
+                        cancelled = true;
+                        break;
                     }
                     // con molti file Explorer avvia le istanze a ondate (a volte con pause): si copia finché ne arrivano
                     collector.WaitQuiet(900, 3000);
                     files = collector.Take();
                 }
                 while (files.Count > 0);
+
+                // annullato prima di inviare qualcosa: niente notifica, ma gli invii arrivati intanto
+                // (da un'altra finestra) non vanno persi e ripartono con la loro domanda
+                if (cancelled && job.Result.Copied == 0 && job.Result.Errors.Count == 0)
+                {
+                    files = collector.Take();
+                    if (files.Count == 0) files = collector.Close();
+                    job = null;
+                    continue;
+                }
 
                 // tutto copiato: ora Unity in primo piano, così importa tutto in una volta
                 Projects.FocusEditor(project);
@@ -461,6 +472,7 @@ namespace SendToUnity
             public string Source;
             public string Target;
             public bool Conflict;
+            public bool Duplicate;   // stesso nome di un altro file dello stesso invio
             public bool IsMeta;   // .meta di Unity che accompagna un file o una cartella
             public Step Owner;    // il file che il .meta accompagna (null per le cartelle)
             public bool Done;
@@ -489,7 +501,7 @@ namespace SendToUnity
             var movedRoots = new List<string>();
             var steps = Plan(sources, folders, movedRoots);
 
-            var conflicts = steps.Where(s => s.Conflict).Select(s => s.Target).ToList();
+            var conflicts = steps.Where(s => s.Conflict && !s.Duplicate).Select(s => s.Target).ToList();
             if (conflicts.Count > 0 && overwrite == null)
             {
                 var answer = Ui.AskOverwrite(conflicts, Result);
@@ -515,11 +527,17 @@ namespace SendToUnity
                 catch (Exception ex) { AddError(Path.GetFileName(folder), ex); }
             }
 
-            using (var progress = new Progress(Ui.Where(Result), steps.Count(s => !s.IsMeta)))
+            using (var progress = new Progress(Ui.Where(Result), steps.Count(s => !s.IsMeta), move))
             {
                 foreach (var step in steps.Where(s => !s.IsMeta))
                 {
                     progress.Step();
+                    if (step.Duplicate)
+                    {
+                        // sostituendo, uno dei due andrebbe perso (spostando, per sempre)
+                        Result.Errors.Add(Path.GetFileName(step.Source) + ": c'è un altro file con lo stesso nome in questo invio");
+                        continue;
+                    }
                     if (step.Conflict && overwrite != true)
                     {
                         Result.Skipped++;
@@ -544,7 +562,12 @@ namespace SendToUnity
             {
                 if (step.Owner != null && !step.Owner.Done) continue;   // file saltato: il .meta resta con lui
                 try { TransferMeta(step); }
-                catch (Exception ex) { Log.Write("meta " + step.Source + ": " + ex.Message); }
+                catch (Exception ex)
+                {
+                    // senza il suo .meta Unity dà al file un GUID nuovo e i riferimenti si rompono: va detto
+                    AddError(Path.GetFileName(step.Source), ex);
+                    Log.Write("meta " + step.Source + ": " + ex.Message);
+                }
             }
             if (move)
             {
@@ -568,20 +591,31 @@ namespace SendToUnity
             var assets = new Dictionary<string, Step>(StringComparer.OrdinalIgnoreCase);
             var metas = new List<KeyValuePair<string, string>>();   // .meta da valutare: origine, destinazione
 
+            var normalized = new List<string>();
             foreach (string raw in sources)
             {
-                string source;
-                try { source = Paths.Normalize(raw); }
+                try { normalized.Add(Paths.Normalize(raw)); }
                 catch (Exception)
                 {
                     Result.Errors.Add(raw + ": percorso non valido");
-                    continue;
                 }
+            }
+            // un file che sta dentro una cartella dello stesso invio viaggia già con la cartella
+            var selectedFolders = normalized.Where(Directory.Exists).ToList();
+
+            foreach (string source in normalized)
+            {
                 if (!seen.Add(source)) continue;
+                if (selectedFolders.Any(f => !Paths.Same(f, source) && Paths.IsInside(source, f))) continue;
                 // i .meta non si mandano da soli: viaggiano con il loro file (vedi sotto)
                 if (IsMeta(source) && File.Exists(source)) continue;
 
                 string name = Path.GetFileName(source);
+                if (name.Length == 0)
+                {
+                    Result.Errors.Add(source + ": un disco intero non si può inviare");
+                    continue;
+                }
                 string target = Path.Combine(destination, name);
 
                 if (Directory.Exists(source))
@@ -663,9 +697,8 @@ namespace SendToUnity
                 }
                 foreach (string sub in Directory.GetDirectories(folder))
                 {
+                    if (Skipped(sub)) continue;
                     string name = Path.GetFileName(sub);
-                    // .git, .svn e simili, e i resti degli zip fatti su Mac: non sono asset
-                    if (name.StartsWith(".") || name.Equals("__MACOSX", StringComparison.OrdinalIgnoreCase)) continue;
                     string subTarget = Path.Combine(target, name);
                     folders.Add(subTarget);
                     folderTargets[sub] = subTarget;
@@ -676,6 +709,16 @@ namespace SendToUnity
             {
                 AddError(Path.GetFileName(folder), ex);
             }
+        }
+
+        // .git, .svn e simili, i resti degli zip fatti su Mac, e i collegamenti a cartelle (junction):
+        // non sono asset, e seguendo un collegamento si toccherebbero file che stanno altrove
+        static bool Skipped(string folder)
+        {
+            string name = Path.GetFileName(folder);
+            if (name.StartsWith(".") || name.Equals("__MACOSX", StringComparison.OrdinalIgnoreCase)) return true;
+            try { return (File.GetAttributes(folder) & FileAttributes.ReparsePoint) != 0; }
+            catch (Exception) { return true; }
         }
 
         static bool IsJunk(string name)
@@ -706,9 +749,10 @@ namespace SendToUnity
 
         static Step AddStep(List<Step> steps, HashSet<string> targets, string source, string target)
         {
-            // due file con lo stesso nome finirebbero uno sull'altro: conta come file già presente
-            bool conflict = !targets.Add(target) || File.Exists(target) || Directory.Exists(target);
-            var step = new Step { Source = source, Target = target, Conflict = conflict };
+            // due file dello stesso invio con lo stesso nome finirebbero uno sull'altro: il secondo non va
+            bool duplicate = !targets.Add(target);
+            bool conflict = duplicate || File.Exists(target) || Directory.Exists(target);
+            var step = new Step { Source = source, Target = target, Conflict = conflict, Duplicate = duplicate };
             steps.Add(step);
             return step;
         }
@@ -796,7 +840,10 @@ namespace SendToUnity
         {
             try
             {
-                foreach (string sub in Directory.GetDirectories(folder)) Cleanup(sub);
+                foreach (string sub in Directory.GetDirectories(folder))
+                {
+                    if (!Skipped(sub)) Cleanup(sub);
+                }
                 var left = Directory.GetFileSystemEntries(folder);
                 if (!left.All(f => File.Exists(f) && IsJunk(Path.GetFileName(f)))) return;   // ci sono file saltati
                 foreach (string f in left) Delete(f);
@@ -826,10 +873,13 @@ namespace SendToUnity
         bool finished;
         Thread thread;
 
-        public Progress(string where, int total)
+        readonly bool move;
+
+        public Progress(string where, int total, bool move)
         {
             this.where = where;
             this.total = total;
+            this.move = move;
             delay = new System.Threading.Timer(delegate { Show(); }, null, 800, Timeout.Infinite);
         }
 
@@ -840,7 +890,7 @@ namespace SendToUnity
 
         public string Text
         {
-            get { return "Copia in corso: " + Math.Min(Thread.VolatileRead(ref done), total) + " di " + total; }
+            get { return (move ? "Spostamento in corso: " : "Copia in corso: ") + Math.Min(Thread.VolatileRead(ref done), total) + " di " + total; }
         }
 
         public void Step()
@@ -1320,7 +1370,7 @@ namespace SendToUnity
                     if (!Read(out settings)) throw new IOException("le impostazioni sono bloccate da un altro programma");
                     change(settings);
                     Directory.CreateDirectory(App.Dir);
-                    string temp = FilePath + ".tmp";
+                    string temp = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
                     File.WriteAllText(temp, new JavaScriptSerializer().Serialize(settings), Encoding.UTF8);
                     for (int attempt = 0; ; attempt++)
                     {
@@ -1586,6 +1636,7 @@ namespace SendToUnity
 
         public int GetTitle(IShellItemArray items, out IntPtr title)
         {
+            MenuServer.Touch();
             title = Marshal.StringToCoTaskMemUni("&" + App.Name);
             return Ok;
         }
@@ -1635,6 +1686,42 @@ namespace SendToUnity
         }
 
         // Un progetto per riga (i più usati in alto, sempre nello stesso ordine) + "Scegli progetto e cartella..."
+        // Il menu si apre a ogni tasto destro: l'elenco dei progetti (che legge file e controlla cartelle) si
+        // ricalcola solo se Unity Hub o le impostazioni sono cambiati, o dopo mezzo minuto. Lo stato
+        // "aperto in Unity" invece si controlla ogni volta, così il pallino è sempre giusto.
+        static readonly object cacheSync = new object();
+        static List<KeyValuePair<string, string>> cachedItems;   // percorso del progetto, testo della voce
+        static string cachedKey;
+        static DateTime cachedAt;
+
+        static List<KeyValuePair<string, string>> MenuItems()
+        {
+            string key = Stamp(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"UnityHub\projects-v1.json")) +
+                         "|" + Stamp(Path.Combine(App.Dir, "settings.json"));
+            lock (cacheSync)
+            {
+                if (cachedItems != null && cachedKey == key && DateTime.UtcNow - cachedAt < TimeSpan.FromSeconds(30)) return cachedItems;
+                var settings = Settings.Load();
+                var items = new List<KeyValuePair<string, string>>();
+                foreach (var p in Projects.Known(settings, false).Take(ShellMenu.MaxProjects))
+                {
+                    string folder = settings.FolderFor(p.Path);
+                    string label = ShellMenu.Escape(p.DisplayName) + (folder != null ? "   →  " + ShellMenu.Escape(folder) : "");
+                    items.Add(new KeyValuePair<string, string>(p.Path, label));
+                }
+                cachedItems = items;
+                cachedKey = key;
+                cachedAt = DateTime.UtcNow;
+                return items;
+            }
+        }
+
+        static string Stamp(string file)
+        {
+            try { return File.GetLastWriteTimeUtc(file).Ticks.ToString(); }
+            catch (Exception) { return ""; }
+        }
+
         static List<IExplorerCommand> Build()
         {
             MenuServer.Touch();
@@ -1642,12 +1729,9 @@ namespace SendToUnity
             int count = 0;
             try
             {
-                var settings = Settings.Load();
-                foreach (var p in Projects.Known(settings, false).Take(ShellMenu.MaxProjects))
+                foreach (var item in MenuItems())
                 {
-                    string folder = settings.FolderFor(p.Path);
-                    string label = ShellMenu.Escape(p.DisplayName) + (folder != null ? "   →  " + ShellMenu.Escape(folder) : "");
-                    list.Add(new ProjectCommand(label, new[] { "--to", p.Path }, Projects.IsOpen(p.Path), false));
+                    list.Add(new ProjectCommand(item.Value, new[] { "--to", item.Key }, Projects.IsOpen(item.Key), false));
                     count++;
                 }
             }
@@ -1668,7 +1752,15 @@ namespace SendToUnity
             File.WriteAllLines(list, paths, new UTF8Encoding(false));
             string line = string.Join(" ", arguments.Select(Paths.Quote)) + " --list " + Paths.Quote(list);
             Log.Write("menu: " + line + " (" + paths.Count + " elementi)");
-            Process.Start(new ProcessStartInfo(App.ExePath, line) { UseShellExecute = false });
+            try
+            {
+                Process.Start(new ProcessStartInfo(App.ExePath, line) { UseShellExecute = false, WorkingDirectory = App.Dir }).Dispose();
+            }
+            catch (Exception)
+            {
+                File.Delete(list);
+                throw;
+            }
         }
 
         static List<string> ItemPaths(IShellItemArray items)
@@ -1686,6 +1778,7 @@ namespace SendToUnity
                     paths.Add(Marshal.PtrToStringUni(name));
                     Marshal.FreeCoTaskMem(name);
                 }
+                Marshal.ReleaseComObject(item);   // dentro Explorer: niente oggetti lasciati al garbage collector
             }
             return paths;
         }
@@ -1693,8 +1786,14 @@ namespace SendToUnity
         public static List<string> ReadList(string file)
         {
             var lines = File.ReadAllLines(file, Encoding.UTF8).Where(l => l.Length > 0).ToList();
-            try { File.Delete(file); }
-            catch (Exception) { }
+            // si cancella solo l'elenco scritto dal menu, mai un file qualsiasi passato a mano
+            bool ours = Paths.Same(Path.GetDirectoryName(Path.GetFullPath(file)), Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\')) &&
+                        System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(file), "^SendToUnity-[0-9a-f]{32}\\.txt$");
+            if (ours)
+            {
+                try { File.Delete(file); }
+                catch (Exception) { }
+            }
             return lines;
         }
     }
@@ -1716,6 +1815,7 @@ namespace SendToUnity
 
         public int GetTitle(IShellItemArray items, out IntPtr text)
         {
+            MenuServer.Touch();
             text = Marshal.StringToCoTaskMemUni(title);
             return MenuCommand.Ok;
         }
@@ -1867,8 +1967,23 @@ namespace SendToUnity
 
     static class ModernMenu
     {
-        public const string PackageName = "DAVFX.InviaAUnity";
-        const string Publisher = "CN=InviaAUnity";
+        // Nome e certificato diversi per ogni utente del PC: ognuno ha il suo pacchetto e non tocca quello degli altri
+        static readonly string UserTag = UserHash();
+        public static readonly string PackageName = "DAVFX.InviaAUnity." + UserTag;
+        static readonly string Publisher = "CN=InviaAUnity-" + UserTag;
+
+        // le prime versioni usavano un nome uguale per tutti: va tolto, altrimenti la voce comparirebbe doppia
+        const string LegacyPackage = "DAVFX.InviaAUnity";
+        const string LegacyPublisher = "CN=InviaAUnity";
+
+        static string UserHash()
+        {
+            using (var sha = SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(WindowsIdentity.GetCurrent().User.Value));
+                return BitConverter.ToString(hash, 0, 4).Replace("-", "");
+            }
+        }
 
         static string Folder
         {
@@ -1914,44 +2029,61 @@ namespace SendToUnity
             if (Environment.GetEnvironmentVariable("SENDTOUNITY_SOLO_MENU_CLASSICO") == "1")
             {
                 Log.Write("menu ridotto: saltato su richiesta");
+                Remove();
                 return;
             }
             try
             {
-                string manifest = Manifest();
-                string hash = Hash(manifest);
-                string msix = Path.Combine(Folder, "InviaAUnity.msix");
-                string[] state = null;
-                try { state = File.ReadAllText(StateFile).Split('|'); }
-                catch (Exception) { }
-
-                // stesso manifest e certificato ancora fidato: niente da rifare, nessuna richiesta
-                if (state != null && state.Length == 2 && state[0] == hash && File.Exists(msix) && IsTrusted(state[1]))
-                {
-                    Register(msix, false);
-                    return;
-                }
-
-                Directory.CreateDirectory(Folder);
-                string logo = Path.Combine(Folder, "logo.png");
-                SaveLogo(logo);
-                string manifestFile = Path.Combine(Folder, "AppxManifest.xml");
-                File.WriteAllText(manifestFile, manifest, new UTF8Encoding(false));
-                Package.Write(msix, manifestFile, logo);
-                string cer = Path.Combine(Folder, "InviaAUnity.cer");
-                string thumbprint = PackageSigner.SignWithNewCertificate(msix, Publisher, cer);
-                if (!Trust(cer, thumbprint))
-                {
-                    Log.Write("menu ridotto: certificato non accettato, resta il menu classico");
-                    return;
-                }
-                File.WriteAllText(StateFile, hash + "|" + thumbprint);
-                Register(msix, true);
+                Update();
             }
             catch (Exception ex)
             {
                 Log.Write("menu ridotto non installato: " + ex);
             }
+            // conta il pacchetto che c'è davvero (per esempio quello vecchio, se il permesso è stato negato):
+            // se c'è, la voce del registro non serve e comparirebbe doppia
+            try
+            {
+                if (PowerShell("if (Get-AppxPackage -Name $env:STU_PACKAGE) { 'si' }").Trim() == "si")
+                    File.WriteAllText(ActiveFile, PackageName);
+            }
+            catch (Exception ex)
+            {
+                Log.Write("menu ridotto: stato del pacchetto non letto: " + ex.Message);
+            }
+        }
+
+        static void Update()
+        {
+            string manifest = Manifest();
+            string hash = Hash(manifest);
+            string msix = Path.Combine(Folder, "InviaAUnity.msix");
+            string[] state = null;
+            try { state = File.ReadAllText(StateFile).Split('|'); }
+            catch (Exception) { }
+
+            // stesso manifest e certificato ancora fidato: niente da rifare, nessuna richiesta
+            if (state != null && state.Length == 2 && state[0] == hash && File.Exists(msix) && IsTrusted(state[1]))
+            {
+                Register(msix, false);
+                return;
+            }
+
+            Directory.CreateDirectory(Folder);
+            string logo = Path.Combine(Folder, "logo.png");
+            SaveLogo(logo);
+            string manifestFile = Path.Combine(Folder, "AppxManifest.xml");
+            File.WriteAllText(manifestFile, manifest, new UTF8Encoding(false));
+            Package.Write(msix, manifestFile, logo);
+            string cer = Path.Combine(Folder, "InviaAUnity.cer");
+            string thumbprint = PackageSigner.SignWithNewCertificate(msix, Publisher, cer);
+            if (!Trust(cer, thumbprint))
+            {
+                Log.Write("menu ridotto: certificato non accettato, resta il menu classico");
+                return;
+            }
+            File.WriteAllText(StateFile, hash + "|" + thumbprint);
+            Register(msix, true);
         }
 
         public static void Remove()
@@ -1959,8 +2091,9 @@ namespace SendToUnity
             if (!Supported) return;
             try
             {
-                PowerShell("Get-AppxPackage -Name '" + PackageName + "' | Remove-AppxPackage");
-                Directory.Delete(Folder, true);
+                PowerShell("Get-AppxPackage -Name $env:STU_PACKAGE | Remove-AppxPackage\n" +
+                           "Get-AppxPackage -Name '" + LegacyPackage + "' | Remove-AppxPackage");
+                if (Directory.Exists(Folder)) Directory.Delete(Folder, true);
             }
             catch (Exception ex)
             {
@@ -1970,11 +2103,13 @@ namespace SendToUnity
 
         static void Register(string msix, bool replace)
         {
+            // i percorsi passano da variabili d'ambiente: nessun carattere del nome utente può rompere lo script
             PowerShell(
-                "$p = Get-AppxPackage -Name '" + PackageName + "'\n" +
+                "Get-AppxPackage -Name '" + LegacyPackage + "' | Remove-AppxPackage\n" +
+                "$p = Get-AppxPackage -Name $env:STU_PACKAGE\n" +
                 (replace ? "if ($p) { Remove-AppxPackage -Package $p.PackageFullName; $p = $null }\n" : "") +
-                "if (-not $p) { Add-AppxPackage -Path " + PsQuote(msix) + " -ExternalLocation " + PsQuote(App.Dir) + " }");
-            File.WriteAllText(ActiveFile, PackageName);
+                "if (-not $p) { Add-AppxPackage -Path $env:STU_MSIX -ExternalLocation $env:STU_DIR }",
+                "STU_MSIX", msix);
             Log.Write("menu ridotto registrato");
         }
 
@@ -1984,12 +2119,7 @@ namespace SendToUnity
             catch (Exception) { }
         }
 
-        static string PsQuote(string text)
-        {
-            return "'" + text.Replace("'", "''") + "'";
-        }
-
-        static void PowerShell(string script)
+        static string PowerShell(string script, params string[] variables)
         {
             string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes("$ErrorActionPreference = 'Stop'\n" + script));
             var info = new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded)
@@ -1999,12 +2129,22 @@ namespace SendToUnity
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            info.EnvironmentVariables["STU_PACKAGE"] = PackageName;
+            info.EnvironmentVariables["STU_DIR"] = App.Dir;
+            for (int i = 0; i + 1 < variables.Length; i += 2) info.EnvironmentVariables[variables[i]] = variables[i + 1];
             using (var process = Process.Start(info))
             {
                 var error = process.StandardError.ReadToEndAsync();
-                string output = process.StandardOutput.ReadToEnd();
-                if (!process.WaitForExit(180000)) throw new TimeoutException("PowerShell non risponde");
-                if (process.ExitCode != 0) throw new Exception("PowerShell: " + (error.Result + " " + output).Trim());
+                var output = process.StandardOutput.ReadToEndAsync();
+                if (!process.WaitForExit(180000))
+                {
+                    try { process.Kill(); }
+                    catch (Exception) { }
+                    throw new TimeoutException("PowerShell non risponde");
+                }
+                process.WaitForExit();
+                if (process.ExitCode != 0) throw new Exception("PowerShell: " + (error.Result + " " + output.Result).Trim());
+                return output.Result;
             }
         }
 
@@ -2022,13 +2162,13 @@ namespace SendToUnity
         {
             if (new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
             {
-                TrustCertificate(cer);
+                TrustCertificate(cer, thumbprint);
             }
             else
             {
                 try
                 {
-                    var info = new ProcessStartInfo(App.ExePath, "--trust " + Paths.Quote(cer)) { UseShellExecute = true, Verb = "runas" };
+                    var info = new ProcessStartInfo(App.ExePath, "--trust " + Paths.Quote(cer) + " " + thumbprint) { UseShellExecute = true, Verb = "runas" };
                     using (var process = Process.Start(info)) process.WaitForExit();
                 }
                 catch (System.ComponentModel.Win32Exception ex)
@@ -2040,16 +2180,24 @@ namespace SendToUnity
             return IsTrusted(thumbprint);
         }
 
-        // Aggiunge il certificato a quelli fidati del PC e toglie quelli vecchi del programma
-        public static void TrustCertificate(string cer)
+        // Aggiunge il certificato a quelli fidati del PC e toglie quelli vecchi del programma (di questo utente).
+        // Gira con i permessi di amministratore: accetta solo il certificato appena creato, per la sola firma del codice.
+        public static void TrustCertificate(string cer, string thumbprint)
         {
             var certificate = new X509Certificate2(cer);
+            bool codeSigningOnly = certificate.Extensions.OfType<X509EnhancedKeyUsageExtension>()
+                .Any(e => e.EnhancedKeyUsages.Count == 1 && e.EnhancedKeyUsages[0].Value == "1.3.6.1.5.5.7.3.3");
+            bool ca = certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => e.CertificateAuthority);
+            if (!string.Equals(certificate.Thumbprint, thumbprint, StringComparison.OrdinalIgnoreCase) ||
+                certificate.Subject != Publisher || !codeSigningOnly || ca)
+                throw new InvalidOperationException("certificato inatteso, non lo aggiungo: " + certificate.Subject);
             using (var store = new X509Store(StoreName.TrustedPeople, StoreLocation.LocalMachine))
             {
                 store.Open(OpenFlags.ReadWrite);
-                foreach (var old in store.Certificates.Find(X509FindType.FindBySubjectDistinguishedName, Publisher, false))
+                foreach (var old in store.Certificates)
                 {
-                    if (old.Thumbprint != certificate.Thumbprint) store.Remove(old);
+                    bool ours = old.Subject == Publisher || old.Subject == LegacyPublisher;
+                    if (ours && old.Thumbprint != certificate.Thumbprint) store.Remove(old);
                 }
                 store.Add(certificate);
             }
@@ -2473,12 +2621,15 @@ namespace SendToUnity
             {
                 if (result.Skipped == 1) return "Nessun file " + done + "o: era già presente";
                 if (result.Skipped > 1) return "Nessun file " + done + "o: erano già presenti";
-                if (result.AlreadyThere > 0) return "I file sono già in questa cartella";
+                if (result.AlreadyThere == 1) return "Il file è già in questa cartella";
+                if (result.AlreadyThere > 1) return "I file sono già in questa cartella";
                 return "Nessun file " + done + "o";
             }
             string text = result.Copied == 1 ? "1 file " + done + "o" : result.Copied + " file " + done + "i";
             if (result.Skipped > 0)
                 text += ", " + result.Skipped + (result.Skipped == 1 ? " saltato (già presente)" : " saltati (già presenti)");
+            if (result.AlreadyThere > 0)
+                text += ", " + result.AlreadyThere + " già in questa cartella";
             return text;
         }
     }
@@ -2589,6 +2740,8 @@ namespace SendToUnity
             };
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(send);
+            send.TabIndex = 0;   // da destra a sinistra: il Tab deve passare prima da Invia
+            cancel.TabIndex = 1;
             AddRow(grid, buttons, null);
 
             Controls.Add(grid);
@@ -2597,10 +2750,11 @@ namespace SendToUnity
 
             projectCombo.SelectedIndexChanged += delegate { ProjectChanged(); };
             browse.Click += delegate { Browse(); };
-            ActiveControl = folderCombo;   // il progetto e' gia' scelto: si scrive subito la cartella
+            ActiveControl = folderCombo;   // il progetto è già scelto: si scrive subito la cartella
             Shown += delegate
             {
-                Activate();
+                // aperta da un servizio in background: senza questo i tasti finirebbero ancora in Esplora risorse
+                if (!Native.BringToFront(Handle)) Activate();
                 folderCombo.SelectAll();
                 PullFiles();
             };
@@ -2628,7 +2782,8 @@ namespace SendToUnity
             var combo = (ComboBox)sender;
             object item = combo.Items[e.Index];
             var project = item as ProjectInfo;
-            bool selected = (e.State & DrawItemState.Selected) != 0 && (e.State & DrawItemState.ComboBoxEdit) == 0;
+            // DrawBackground colora di blu anche la casella chiusa quando ha il focus: il testo deve seguirla
+            bool selected = (e.State & DrawItemState.Selected) != 0;
             Color text = selected ? SystemColors.HighlightText : SystemColors.ControlText;
             Color soft = selected ? SystemColors.HighlightText : SystemColors.GrayText;
             var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
@@ -2739,10 +2894,17 @@ namespace SendToUnity
                         return;
                     }
                 }
-                Settings.Update(s =>
+                try
                 {
-                    if (!s.ExtraProjects.Any(p => Paths.Same(p, path))) s.ExtraProjects.Add(path);
-                });
+                    Settings.Update(s =>
+                    {
+                        if (!s.ExtraProjects.Any(p => Paths.Same(p, path))) s.ExtraProjects.Add(path);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Log.Write("progetto aggiunto non salvato: " + ex.Message);   // per questo invio va bene lo stesso
+                }
                 var info = new ProjectInfo { Path = path, Name = Path.GetFileName(path), Open = Projects.IsOpen(path) };
                 projectCombo.SelectedIndex = projectCombo.Items.Add(info);
             }
@@ -2882,13 +3044,19 @@ namespace SendToUnity
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(skip);
             buttons.Controls.Add(replace);
+            replace.TabIndex = 0;
+            skip.TabIndex = 1;
+            cancel.TabIndex = 2;
             grid.Controls.Add(buttons);
 
             Controls.Add(grid);
             AcceptButton = replace;   // il caso tipico: texture aggiornate da rimandare
             CancelButton = cancel;
             ActiveControl = replace;  // altrimenti il focus finisce su Annulla e Invio annulla
-            Shown += delegate { Activate(); };
+            Shown += delegate
+            {
+                if (!Native.BringToFront(Handle)) Activate();
+            };
         }
     }
 
@@ -3074,6 +3242,7 @@ namespace SendToUnity
         {
             Log.Write("apro " + open);
             Hide();
+            Native.AllowSetForegroundWindow(-1);   // la cartella si apre davanti a Unity, non dietro
             try
             {
                 if (!File.Exists(open))
@@ -3199,6 +3368,7 @@ namespace SendToUnity
             }
         }
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int processId);
         [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);

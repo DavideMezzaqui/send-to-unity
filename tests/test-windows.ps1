@@ -295,7 +295,7 @@ try {
     $key = $registry.OpenSubKey($fileMenu)
     if ($modern) {
         # su Windows 11 la voce arriva dal pacchetto, in tutti e due i menu: quella del registro sparisce
-        $package = Get-AppxPackage -Name 'DAVFX.InviaAUnity'
+        $package = Get-AppxPackage -Name 'DAVFX.InviaAUnity*'
         Check ($null -ne $package) 'Windows 11: pacchetto del menu ridotto registrato'
         if (-not $package) { Note ('dal log: ' + ((Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ -match 'menu ridotto|certificato' }) -join ' | ')) }
         Check ($null -eq $key -and $null -eq $registry.OpenSubKey($dirMenu)) 'Windows 11: nessuna voce doppia nel registro (vecchia voce compresa)'
@@ -502,6 +502,18 @@ try {
     [void](Wait-Idle)
     $arrived = @('sciolto_a.png', 'Pacchetto_A\dentro_a.png', 'sciolto_b.png', 'Pacchetto_B\dentro_b.png' | Where-Object { Exists (Join-Path $dest $_) })
     Check ($arrived.Count -eq 4) "file e cartelle insieme: arriva tutto ($($arrived -join ', '))"
+
+    # due file con lo stesso nome nello stesso invio: il primo arriva, il secondo no (nessuno sovrascrive l'altro)
+    $twinA = New-File (Join-Path $in 'gemelli_a\gemello.png') 'GA'
+    $twinB = New-File (Join-Path $in 'gemelli_b\gemello.png') 'GB'
+    $mark = Log-Mark
+    [void](Wait-Exit (Start-Tool @('--to', (Q $p1), (Q $twinA), (Q $twinB))))
+    Check ((Read-File (Join-Path $dest 'gemello.png')) -eq 'GA') 'due file con lo stesso nome: arriva il primo, il secondo non lo sovrascrive'
+    # una cartella e un file che sta dentro di lei: il file viaggia con la cartella, una volta sola
+    $nestDir = Join-Path $in 'Annidata'
+    $nestFile = New-File (Join-Path $nestDir 'dentro.png') 'ND'
+    [void](Wait-Exit (Start-Tool @('--to', (Q $p1), (Q $nestDir), (Q $nestFile))))
+    Check ((Read-File (Join-Path $dest 'Annidata\dentro.png')) -eq 'ND' -and -not (Exists (Join-Path $dest 'dentro.png'))) 'cartella e un suo file insieme: il file arriva solo dentro la cartella'
 
     Write-Host '--- 7. progetto aperto in Unity'
     $fakeDir = Join-Path $work 'fake'
@@ -758,7 +770,7 @@ try {
     Check ($null -eq $registry.OpenSubKey($fileMenu)) 'voce sui file rimossa'
     Check ($null -eq $registry.OpenSubKey($dirMenu)) 'voce sulle cartelle rimossa'
     Check ($null -eq $registry.OpenSubKey($classKey)) 'comando del menu rimosso'
-    if ($modern) { Check ($null -eq (Get-AppxPackage -Name 'DAVFX.InviaAUnity')) 'pacchetto del menu ridotto rimosso' }
+    if ($modern) { Check ($null -eq (Get-AppxPackage -Name 'DAVFX.InviaAUnity*')) 'pacchetto del menu ridotto rimosso' }
     Run-Native { reg delete "HKLM\$classKey" /f }
     Check (-not (Exists $sendToLink)) 'collegamento in "Invia a" rimosso'
     Check (-not (Exists $app)) 'cartella del programma rimossa'
@@ -796,7 +808,7 @@ finally {
     if ($fake) { try { $fake.Kill() } catch { } }
     if ($normalUser) { try { Remove-LocalUser -Name 'stuprova' } catch { } }
     # il certificato del test non resta tra quelli fidati del runner
-    Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object { $_.Subject -eq 'CN=InviaAUnity' } | Remove-Item -ErrorAction SilentlyContinue
+    Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object { $_.Subject -like 'CN=InviaAUnity*' } | Remove-Item -ErrorAction SilentlyContinue
     Get-Process SendToUnity -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
 
     Write-Host '--- log del programma'
