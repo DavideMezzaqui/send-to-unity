@@ -85,6 +85,7 @@ function Wait-Exit($processes, [int]$seconds = 30) {
 function Get-Workers {
     $ids = @(Get-CimInstance Win32_Process -Filter "Name='SendToUnity.exe'" |
         Where-Object { $_.CommandLine -notmatch '--menu-server' } | ForEach-Object { [int]$_.ProcessId })
+    if ($ids.Count -eq 0) { return @() }
     @(Get-Process -Id $ids -ErrorAction SilentlyContinue)
 }
 # Dopo un clic nel menu non ho i processi in mano: aspetto che non ce ne siano piu'
@@ -334,6 +335,7 @@ try {
     $items = Menu @($albedo)
     Check ($null -ne $items) 'il menu del tasto destro contiene "Invia a Unity"'
     Note ('sottomenu: ' + (@($items) -join ' | '))
+    Note ('voci principali: ' + ([ExplorerMenu]::TopItems -join ' | '))
     Check (@($items).Count -eq 4) 'sottomenu: 2 progetti, separatore, "Scegli progetto e cartella..." (il progetto sparito escluso)'
     Check (@($items)[0] -eq 'Gioco [Prova] && Co') 'primo il progetto usato piu di recente, con la & mostrata'
     Check (@($items)[-1] -eq 'Scegli progetto e cartella...') 'ultima voce: Scegli progetto e cartella...'
