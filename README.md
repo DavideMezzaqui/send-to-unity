@@ -5,6 +5,10 @@ niente trascinamenti, niente finestre affiancate.
 
 ![Il menu del tasto destro](docs/menu.png)
 
+Su Windows 11 la voce c'è anche nel menu ridotto, quello che si apre subito:
+
+![Il menu ridotto di Windows 11](docs/menu-ridotto.png)
+
 ## Come si usa
 
 Seleziona i file (o una cartella), tasto destro > **Invia a Unity** > clic sul progetto.
