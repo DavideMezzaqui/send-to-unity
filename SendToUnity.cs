@@ -3107,6 +3107,9 @@ namespace SendToUnity
             form.ForeColor = Text;
             WhenCreated(form, () => Native.DarkTitleBar(form.Handle));
             Paint(form.Controls);
+            // the button that Enter presses stands out, as in the Windows dialogs
+            var main = form.AcceptButton as Button;
+            if (main != null) main.FlatAppearance.BorderColor = Link;
         }
 
         static void Paint(Control.ControlCollection controls)
