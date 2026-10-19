@@ -1278,6 +1278,7 @@ namespace SendToUnity
     {
         public List<string> ExtraProjects { get; set; }
         public List<ProjectPrefs> Projects { get; set; }
+        public string Theme { get; set; }   // "dark" (default), "light" or "system" (follows Windows)
 
         public Settings()
         {
@@ -2771,6 +2772,7 @@ namespace SendToUnity
                 ActiveControl = browse;
             }
             UpdateFilesLabel();
+            Look.Apply(this);
         }
 
         public static readonly Color OpenGreen = Color.FromArgb(22, 163, 74);
@@ -2779,15 +2781,15 @@ namespace SendToUnity
         // The space for the dot is always there, so names stay aligned.
         static void DrawProject(object sender, DrawItemEventArgs e)
         {
-            e.DrawBackground();
+            // the selected row (and the closed box when it has focus) is highlighted: the text must follow it
+            bool selected = (e.State & DrawItemState.Selected) != 0;
+            using (var back = new SolidBrush(selected ? SystemColors.Highlight : Look.Field)) e.Graphics.FillRectangle(back, e.Bounds);
             if (e.Index < 0) return;
             var combo = (ComboBox)sender;
             object item = combo.Items[e.Index];
             var project = item as ProjectInfo;
-            // DrawBackground also paints the closed box blue when it has focus: the text must follow it
-            bool selected = (e.State & DrawItemState.Selected) != 0;
-            Color text = selected ? SystemColors.HighlightText : SystemColors.ControlText;
-            Color soft = selected ? SystemColors.HighlightText : SystemColors.GrayText;
+            Color text = selected ? SystemColors.HighlightText : Look.Dark ? Look.Text : SystemColors.ControlText;
+            Color soft = selected ? SystemColors.HighlightText : Look.Muted;
             var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
 
             int dot = Ui.S(8);
@@ -3055,6 +3057,7 @@ namespace SendToUnity
             AcceptButton = replace;   // the typical case: updated textures to send again
             CancelButton = cancel;
             ActiveControl = replace;  // otherwise focus lands on Cancel and Enter cancels
+            Look.Apply(this);
             Shown += delegate
             {
                 if (!Native.BringToFront(Handle)) Activate();
@@ -3062,10 +3065,15 @@ namespace SendToUnity
         }
     }
 
-    // Notification colors: the same as Windows menus, light or dark like the app theme
+    // Colors of the windows and notifications: dark by default, like Unity.
+    // In settings.json, "Theme": "light" or "system" (follows the Windows app theme) changes it.
     static class Look
     {
         public static readonly bool Dark = ReadDark();
+        public static readonly Color Window = Dark ? Color.FromArgb(32, 32, 32) : SystemColors.Control;
+        public static readonly Color Field = Dark ? Color.FromArgb(45, 45, 45) : SystemColors.Window;
+        public static readonly Color ButtonFace = Dark ? Color.FromArgb(55, 55, 55) : SystemColors.Control;
+        public static readonly Color Muted = Dark ? Color.FromArgb(160, 160, 160) : SystemColors.GrayText;
         public static readonly Color Background = Dark ? Color.FromArgb(44, 44, 44) : Color.FromArgb(249, 249, 249);
         public static readonly Color Border = Dark ? Color.FromArgb(70, 70, 70) : Color.FromArgb(222, 222, 222);
         public static readonly Color Text = Dark ? Color.White : Color.FromArgb(26, 26, 26);
@@ -3074,6 +3082,9 @@ namespace SendToUnity
 
         static bool ReadDark()
         {
+            string theme = (Settings.Load().Theme ?? "dark").Trim().ToLowerInvariant();
+            if (theme == "light") return false;
+            if (theme != "system") return true;
             try
             {
                 using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
@@ -3086,6 +3097,60 @@ namespace SendToUnity
             {
                 return false;
             }
+        }
+
+        // Dark colors for a dialog and all its controls (nothing to do with the light theme)
+        public static void Apply(Form form)
+        {
+            if (!Dark) return;
+            form.BackColor = Window;
+            form.ForeColor = Text;
+            WhenCreated(form, () => Native.DarkTitleBar(form.Handle));
+            Paint(form.Controls);
+        }
+
+        static void Paint(Control.ControlCollection controls)
+        {
+            foreach (Control c in controls)
+            {
+                var button = c as Button;
+                var combo = c as ComboBox;
+                var check = c as CheckBox;
+                if (button != null)
+                {
+                    button.FlatStyle = FlatStyle.Flat;
+                    button.BackColor = ButtonFace;
+                    button.ForeColor = Text;
+                    button.FlatAppearance.BorderColor = Border;
+                    button.FlatAppearance.MouseOverBackColor = Color.FromArgb(68, 68, 68);
+                    button.FlatAppearance.MouseDownBackColor = Color.FromArgb(80, 80, 80);
+                }
+                else if (combo != null)
+                {
+                    combo.BackColor = Field;
+                    combo.ForeColor = Text;
+                    var target = combo;
+                    WhenCreated(combo, () => Native.DarkControl(target.Handle, "DarkMode_CFD"));
+                }
+                else if (check != null)
+                {
+                    check.FlatStyle = FlatStyle.Flat;
+                    check.ForeColor = Text;
+                    check.FlatAppearance.BorderColor = Border;
+                    check.FlatAppearance.CheckedBackColor = Field;
+                }
+                else if (c is Label)
+                {
+                    c.ForeColor = c.ForeColor == SystemColors.GrayText ? Muted : Text;
+                }
+                Paint(c.Controls);
+            }
+        }
+
+        static void WhenCreated(Control control, Action action)
+        {
+            if (control.IsHandleCreated) action();
+            else control.HandleCreated += delegate { action(); };
         }
 
         // Title in Segoe UI Semibold (the one Windows uses for titles), if available
@@ -3352,6 +3417,26 @@ namespace SendToUnity
     {
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr window, string app, string idList);
+
+        // Dark title bar (Windows 10 2004 and later); older versions just ignore it
+        public static void DarkTitleBar(IntPtr window)
+        {
+            try
+            {
+                int on = 1;
+                DwmSetWindowAttribute(window, 20, ref on, 4);   // DWMWA_USE_IMMERSIVE_DARK_MODE
+            }
+            catch (Exception) { }
+        }
+
+        // Dark version of a standard control (drop-down arrow, list, scroll bar), where Windows has one
+        public static void DarkControl(IntPtr window, string theme)
+        {
+            try { SetWindowTheme(window, theme, null); }
+            catch (Exception) { }
+        }
 
         // Windows 11: rounded corners and border color; false if Windows doesn't support them
         public static bool RoundCorners(IntPtr window, Color border)

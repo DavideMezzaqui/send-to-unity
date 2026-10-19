@@ -74,7 +74,9 @@ After installing you can delete the downloaded folder (keep the zip if you want 
 - The right-click menu is a small File Explorer extension (a DLL compiled by `install.cmd`,
   registered only for your user). If after an update the menu still looks like the old one,
   sign out of Windows and back in (or restart File Explorer).
-- The notification follows the Windows theme (light or dark), like the menus.
+- Windows and notifications are dark by default. To change it, add `"Theme":"light"` (or
+  `"system"`, to follow the Windows app theme) to `%LOCALAPPDATA%\SendToUnity\settings.json`.
+  Windows' own message boxes and the folder picker keep the system theme.
 - **Windows 11, short menu**: Windows only shows programs installed as a signed package there.
   The program creates a lightweight package (it only contains a description and a logo, the files
   stay in `%LOCALAPPDATA%\SendToUnity`) and signs it with a certificate created on your PC.
